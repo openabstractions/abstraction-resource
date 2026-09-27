@@ -1,0 +1,24 @@
+{
+  "name": "@openabstractions/resource",
+  "version": "0.0.0",
+  "description": "Generated JavaScript clients and codecs for the resource table and leases: who holds a scarce resource on this machine, and asking for it back.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openabstractions/abstraction-resource.git",
+    "directory": "javascript"
+  },
+  "homepage": "https://github.com/openabstractions/abstraction-resource#readme",
+  "bugs": {
+    "url": "https://github.com/openabstractions/abstraction-resource/issues"
+  },
+  "type": "module",
+  "types": "./js/abstraction/resource/index.d.mts",
+  "exports": {".": {"types": "./js/abstraction/resource/index.d.mts", "default": "./js/abstraction/resource/index.mjs"}},
+  "files": [
+    "js"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

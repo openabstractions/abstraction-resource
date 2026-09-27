@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Open Abstractions — schema</title>
+<link rel="stylesheet" href="style.css">
+
+<main>
+<nav class="site" aria-label="Primary navigation"><a class="name" href="index.html">Open Abstractions</a>
+<a href="adopt.html">Adopt</a><a href="cases.html">Cases</a><span class="nav-devs-label">for developers</span><a href="reference.html">Reference</a><a href="coverage.html">Coverage</a><a href="catalogue.html">Catalogue</a><a href="https://github.com/openabstractions">GitHub</a></nav>
+
+
+<h1>Schema</h1>
+<p class="lead">Use this reference to inspect fields, methods, accepted values and failure outcomes. For setup and working examples, start with the <a href="reference.html">API guide</a>.</p>
+<p>Definition: <code>abstraction.resource</code></p>
+<nav aria-label="Schema sections" class="meta"><a href="#service-Table">Table</a> · <a href="#service-Leases">Leases</a> · <a href="#types">Types</a> · <a href="#structs">Fields</a> · <a href="#enums">Enumerations</a> · <a href="#constants">Constants</a> · <a href="#encoding">Encoding</a> · <a href="#refusals">Refusals</a></nav>
+<h2 id="service-Table">Service <code>Table</code> <span class="tag">[DEF-S1]</span></h2>
+<p>Read-only: who holds how much of a scarce resource on this machine, verified by the instrument or claimed by the holder. No row is invented: a holder the instrument cannot attribute to a program is reported under its process image with evidence verified and no account when the platform gives none. The table changes nothing.</p>
+<p>Wire identity: <code>abstraction.resource/table@1</code></p>
+<p>Handler error codes, declared by <code>resource_error_codes</code>: <code>internal</code>, <code>invalid_request</code>, <code>caller_refused</code>, <code>unknown_resource</code>, <code>policy_unavailable</code>, <code>forbidden</code>. Generated bindings name each as a ServiceErrorCode member beside the dispatcher's own codes.</p>
+<p>Multiple services share this namespace. Generated ServiceName (Go) and service_name (C++/Python) validate the request envelope and version before returning its service identity for routing. The selected generated dispatcher validates the method and typed arguments; the selector does not authorize callers or interpret method payloads.</p>
+<p>Frames carry version, service, method and typed arguments. Transport owns framing, associated exchanges, deadlines and connections. Unknown version/service/method and malformed arguments are rejected before invoking a handler. One-way WriteFrame success means local submission, not remote acceptance or persistence.</p>
+<p>Request-response methods use ExchangeFrame. Replies carry version, service, method, ok and payload; success payload contains typed value (or an empty object for void). Error payload contains nonempty code and message, which may be empty. ServiceError preserves unknown codes. Unexpected handler failures become handler_error without private details; invalid results become invalid_result. Clients validate reply identity and result before exposing it. A malformed frame or transport failure remains a local error; the transport must associate each response with its exchange. C++ dispatchers are pure protocol bindings, not listening servers.</p>
+<p>The resources this machine&#39;s instrument and adapters can report.</p>
+<h3><code>Resources</code></h3><p><code>request-response</code> <code>ResourcesResult</code></p><ul>
+</ul>
+<p>Who holds resource now. fresh reads the instrument again; otherwise the last sample within its age bound. Gated by abstraction.resource/table.read on resource account; a program always sees its own rows, and capacity, held and observed describe the machine to every caller.</p>
+<h3><code>Holders</code></h3><p><code>request-response</code> <code>HoldersResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>resource</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>bool</code> <code>fresh</code> (required, including zero/false/empty)</li>
+</ul>
+<h2 id="service-Leases">Service <code>Leases</code> <span class="tag">[DEF-S1]</span></h2>
+<p>Leases on a scarce resource, asked back on demand. A holder that predates OA is an attached holder: the service yields on its behalf through the host&#39;s own mechanism (LM Studio unload, Ollama keep_alive 0, ComfyUI free) and records the result as if answered. Every ask, yield and refusal is a record with the asker, the holder, the amount and the time. Version 1 kills nothing and boosts nothing.</p>
+<p>Wire identity: <code>abstraction.resource/leases@1</code></p>
+<p>Handler error codes, declared by <code>resource_error_codes</code>: <code>internal</code>, <code>invalid_request</code>, <code>caller_refused</code>, <code>unknown_resource</code>, <code>policy_unavailable</code>, <code>forbidden</code>. Generated bindings name each as a ServiceErrorCode member beside the dispatcher's own codes.</p>
+<p>Multiple services share this namespace. Generated ServiceName (Go) and service_name (C++/Python) validate the request envelope and version before returning its service identity for routing. The selected generated dispatcher validates the method and typed arguments; the selector does not authorize callers or interpret method payloads.</p>
+<p>Frames carry version, service, method and typed arguments. Transport owns framing, associated exchanges, deadlines and connections. Unknown version/service/method and malformed arguments are rejected before invoking a handler. One-way WriteFrame success means local submission, not remote acceptance or persistence.</p>
+<p>Request-response methods use ExchangeFrame. Replies carry version, service, method, ok and payload; success payload contains typed value (or an empty object for void). Error payload contains nonempty code and message, which may be empty. ServiceError preserves unknown codes. Unexpected handler failures become handler_error without private details; invalid results become invalid_result. Clients validate reply identity and result before exposing it. A malformed frame or transport failure remains a local error; the transport must associate each response with its exchange. C++ dispatchers are pure protocol bindings, not listening servers.</p>
+<p>Ask to reserve amount bytes for admission of the bound caller, waiting up to wait_ms (0..120000) for holders to yield. The reservation is not a physical usage quota. Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when capacity is known and amount exceeds it), then holders are asked in the service&#39;s order and the result is acquired or holders_refused. Nothing is killed.</p>
+<h3><code>Acquire</code></h3><p><code>request-response</code> <code>AcquireResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>resource</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>i64</code> <code>amount</code> (required, including zero/false/empty)</li>
+<li>Argument 3: <code>i64</code> <code>wait_ms</code> (required, including zero/false/empty)</li>
+</ul>
+<p>Extend renew_by of the bound caller&#39;s own lease.</p>
+<h3><code>Renew</code></h3><p><code>request-response</code> <code>LeaseChangeResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>lease</code> (required, including zero/false/empty)</li>
+</ul>
+<p>End the bound caller&#39;s own lease now.</p>
+<h3><code>Release</code></h3><p><code>request-response</code> <code>LeaseChangeResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>lease</code> (required, including zero/false/empty)</li>
+</ul>
+<p>Yield requests addressed to the bound caller since cursor, waiting up to wait_ms (0..30000) for one. Each request names the lease to yield. A holder that never observes is asked through its adapter when the service has one, and is otherwise recorded as unanswered.</p>
+<h3><code>Observe</code></h3><p><code>request-response</code> <code>ObserveResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>cursor</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>i64</code> <code>wait_ms</code> (required, including zero/false/empty)</li>
+</ul>
+<p>Record the bound caller&#39;s answer to one yield request. yielded is checked against the instrument before the asker is told; a refusal carries its reason into the audit.</p>
+<h3><code>Answer</code></h3><p><code>request-response</code> <code>AnswerCallResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>request</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>YieldAnswer</code> <code>answer</code> (required, including zero/false/empty)</li>
+<li>Argument 3: <code>string</code> <code>reason</code> (required, including zero/false/empty)</li>
+</ul>
+<p>Associate the bound caller&#39;s own lease with one directly spawned process when its process start identity, parent relation and account can be verified. A failed or unsupported verification returns unverifiable and keeps conservative reservation accounting. One process may bind to one live lease.</p>
+<h3><code>BindProcess</code></h3><p><code>request-response</code> <code>ProcessBindResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>lease</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>i64</code> <code>pid</code> (required, including zero/false/empty)</li>
+</ul>
+<h2 id="encoding">Encoding <span class="tag">[DEF-E1]</span></h2>
+<div class="wrap"><table>
+<thead><tr><th>setting</th><th>value</th><th>rule</th></tr></thead>
+<tbody>
+<tr><td><code>escape</code></td><td><code>minimal</code></td><td><span class="tag">[DEF-E2]</span></td></tr>
+<tr><td><code>indent</code></td><td><code>2</code></td><td><span class="tag">[DEF-E3]</span></td></tr>
+<tr><td><code>map_keys</code></td><td><code>utf8-bytes</code></td><td><span class="tag">[DEF-E4]</span></td></tr>
+<tr><td><code>numbers</code></td><td><code>integer-decimal</code></td><td><span class="tag">[DEF-E5]</span></td></tr>
+<tr><td><code>opaque</code></td><td><code>verbatim</code></td><td><span class="tag">[DEF-E6]</span></td></tr>
+<tr><td><code>terminator</code></td><td><code>newline</code></td><td><span class="tag">[DEF-E7]</span></td></tr>
+<tr><td><code>duplicate_keys</code></td><td><code>refuse</code></td><td><span class="tag">[DEF-E8]</span></td></tr>
+<tr><td><code>depth_limit</code></td><td><code>64</code></td><td><span class="tag">[DEF-E9]</span></td></tr>
+</tbody></table></div>
+<h2 id="types">Types</h2>
+<div class="wrap"><table>
+<thead><tr><th>kind</th><th>types</th></tr></thead>
+<tbody>
+<tr><td>built in</td><td><code>AcquireOutcome</code> <code>Evidence</code> <code>ProcessBindOutcome</code> <code>ResourceCallOutcome</code> <code>bool</code> <code>i64</code> <code>string</code></td></tr>
+<tr><td>declared below</td><td><code>AnswerResult</code> <code>Lease</code> <code>LeaseChange</code> <code>ResourceList</code> <code>ResourceState</code> <code>YieldPage</code></td></tr>
+<tr><td>container <span class="tag">[DEF-T3]</span></td><td><code>list&lt;string&gt;</code></td></tr>
+<tr><td>repeated record <span class="tag">[DEF-A9]</span></td><td><code>list&lt;Holder&gt;</code> <code>list&lt;YieldRecord&gt;</code> <code>list&lt;YieldRequest&gt;</code></td></tr>
+</tbody></table></div>
+<h3 id="named-types">Named types <span class="tag">[DEF-T2]</span></h3>
+<p class="meta">One spelling is written <span class="tag">[DEF-G2]</span> and a wider set is read <span class="tag">[DEF-G1]</span>; the width between them is the interoperability guarantee.</p>
+<div class="wrap"><table>
+<thead><tr><th>name</th><th>is</th><th>written</th><th>read</th></tr></thead>
+<tbody>
+<tr><td><code>timestamp</code></td><td><code>string</code></td><td><code>rfc3339-micros</code></td><td><code>rfc3339-wide</code></td></tr>
+</tbody></table></div>
+<h2 id="structs">Structs <span class="tag">[DEF-T1]</span></h2>
+<p class="meta">A field is required, or says when it is omitted <span class="tag">[DEF-A4]</span>. Each struct says on its own what it does with a field name it has never heard of <span class="tag">[DEF-A7]</span>. A wire name never moves; where a language must spell it differently the field says so <span class="tag">[DEF-A2]</span>.</p>
+<h3 id="struct-Holder"><code>Holder</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>program</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>account</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>3</td><td><code>amount</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>4</td><td><code>evidence</code></td><td><code>Evidence</code></td><td>required</td><td>—</td></tr>
+<tr><td>5</td><td><code>lease</code></td><td><code>string</code></td><td>optional · omitted when zero</td><td>—</td></tr>
+<tr><td>6</td><td><code>grant</code></td><td><code>string</code></td><td>optional · omitted when zero</td><td>—</td></tr>
+<tr><td>7</td><td><code>since</code></td><td><code>timestamp</code></td><td>optional · omitted when zero</td><td>—</td></tr>
+<tr><td>8</td><td><code>detail</code></td><td><code>string</code></td><td>optional · omitted when zero</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-ResourceState"><code>ResourceState</code></h3>
+<p class="meta">the document <span class="tag">[DEF-A1]</span> · unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>resource</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>capacity</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>3</td><td><code>held</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>4</td><td><code>holders</code></td><td><code>list&lt;Holder&gt;</code></td><td>required</td><td>—</td></tr>
+<tr><td>5</td><td><code>observed</code></td><td><code>timestamp</code></td><td>required</td><td>—</td></tr>
+<tr><td>6</td><td><code>instrument</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-HoldersResult"><code>HoldersResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ResourceCallOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>state</code></td><td><code>ResourceState</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-ResourceList"><code>ResourceList</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>resources</code></td><td><code>list&lt;string&gt;</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>observed</code></td><td><code>timestamp</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-ResourcesResult"><code>ResourcesResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ResourceCallOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>list</code></td><td><code>ResourceList</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-Lease"><code>Lease</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>id</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>resource</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>3</td><td><code>amount</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>4</td><td><code>since</code></td><td><code>timestamp</code></td><td>required</td><td>—</td></tr>
+<tr><td>5</td><td><code>renew_by</code></td><td><code>timestamp</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-YieldRecord"><code>YieldRecord</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>holder</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>amount</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>3</td><td><code>answer</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>4</td><td><code>took_ms</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-AcquireResult"><code>AcquireResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>AcquireOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>lease</code></td><td><code>Lease</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+<tr><td>3</td><td><code>asked</code></td><td><code>list&lt;YieldRecord&gt;</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-YieldRequest"><code>YieldRequest</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>id</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>resource</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>3</td><td><code>amount</code></td><td><code>i64</code></td><td>required</td><td>—</td></tr>
+<tr><td>4</td><td><code>reason</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+<tr><td>5</td><td><code>at</code></td><td><code>timestamp</code></td><td>required</td><td>—</td></tr>
+<tr><td>6</td><td><code>lease</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-YieldPage"><code>YieldPage</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>requests</code></td><td><code>list&lt;YieldRequest&gt;</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>next</code></td><td><code>string</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-ObserveResult"><code>ObserveResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ResourceCallOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>page</code></td><td><code>YieldPage</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-AnswerResult"><code>AnswerResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>recorded</code></td><td><code>bool</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-AnswerCallResult"><code>AnswerCallResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ResourceCallOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>answer</code></td><td><code>AnswerResult</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-LeaseChange"><code>LeaseChange</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>applied</code></td><td><code>bool</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>lease</code></td><td><code>Lease</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-LeaseChangeResult"><code>LeaseChangeResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ResourceCallOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>change</code></td><td><code>LeaseChange</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-ProcessBindResult"><code>ProcessBindResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>ProcessBindOutcome</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h2 id="enums">Enumerations <span class="tag">[DEF-T5]</span></h2>
+<p>Enum fields carry JSON strings containing exact member wire spellings, never numeric IDs. Unknown names are preserved with grant and refused as bad_enum with refuse on read and write. Optional absent fields preserve presence separately from an empty string.</p>
+<p class="meta">An enumeration is a closed vocabulary of wire names, and each one says on its own what a reader does with a member it has never heard of <span class="tag">[DEF-A5]</span>.</p>
+<h3 id="enum-Evidence"><code>Evidence</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>verified</code></td><td><code>verified</code></td></tr>
+<tr><td>2</td><td><code>claimed</code></td><td><code>claimed</code></td></tr>
+</tbody></table></div>
+<h3 id="enum-ResourceCallOutcome"><code>ResourceCallOutcome</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>ok</code></td><td><code>ok</code></td></tr>
+<tr><td>2</td><td><code>forbidden</code></td><td><code>forbidden</code></td></tr>
+<tr><td>3</td><td><code>unavailable</code></td><td><code>unavailable</code></td></tr>
+<tr><td>4</td><td><code>invalid</code></td><td><code>invalid</code></td></tr>
+<tr><td>5</td><td><code>unknown</code></td><td><code>unknown</code></td></tr>
+</tbody></table></div>
+<h3 id="enum-AcquireOutcome"><code>AcquireOutcome</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>acquired</code></td><td><code>acquired</code></td></tr>
+<tr><td>2</td><td><code>insufficient</code></td><td><code>insufficient</code></td></tr>
+<tr><td>3</td><td><code>holders_refused</code></td><td><code>holders_refused</code></td></tr>
+<tr><td>4</td><td><code>not_permitted</code></td><td><code>not_permitted</code></td></tr>
+<tr><td>5</td><td><code>unavailable</code></td><td><code>unavailable</code></td></tr>
+<tr><td>6</td><td><code>invalid</code></td><td><code>invalid</code></td></tr>
+<tr><td>7</td><td><code>forbidden</code></td><td><code>forbidden</code></td></tr>
+</tbody></table></div>
+<h3 id="enum-YieldAnswer"><code>YieldAnswer</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>yielded</code></td><td><code>yielded</code></td></tr>
+<tr><td>2</td><td><code>refused</code></td><td><code>refused</code></td></tr>
+</tbody></table></div>
+<h3 id="enum-ProcessBindOutcome"><code>ProcessBindOutcome</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>bound</code></td><td><code>bound</code></td></tr>
+<tr><td>2</td><td><code>unverifiable</code></td><td><code>unverifiable</code></td></tr>
+<tr><td>3</td><td><code>refused</code></td><td><code>refused</code></td></tr>
+<tr><td>4</td><td><code>invalid</code></td><td><code>invalid</code></td></tr>
+<tr><td>5</td><td><code>forbidden</code></td><td><code>forbidden</code></td></tr>
+<tr><td>6</td><td><code>unavailable</code></td><td><code>unavailable</code></td></tr>
+</tbody></table></div>
+<h2 id="constants">Constants <span class="tag">[DEF-A6]</span></h2>
+<div class="wrap"><table>
+<thead><tr><th>name</th><th>type</th><th>value</th></tr></thead>
+<tbody>
+<tr><td><code>known_resources</code></td><td><code>list&lt;string&gt;</code></td><td><code>card:0, memory, awake</code></td></tr>
+<tr><td><code>resource_error_codes</code></td><td><code>list&lt;string&gt;</code></td><td><code>internal, invalid_request, caller_refused, unknown_resource, policy_unavailable, forbidden</code></td></tr>
+</tbody></table></div>
+<h2 id="refusals">Refusal words <span class="tag">[DEF-R1]</span></h2>
+<div class="wrap"><table>
+<thead><tr><th>order</th><th>word</th><th>stage</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>malformed</code></td><td><code>grammar</code></td></tr>
+<tr><td>2</td><td><code>bad_string</code></td><td><code>grammar</code></td></tr>
+<tr><td>3</td><td><code>number_spelling</code></td><td><code>grammar</code></td></tr>
+<tr><td>4</td><td><code>wrong_type</code></td><td><code>grammar</code></td></tr>
+<tr><td>5</td><td><code>bad_timestamp</code></td><td><code>grammar</code></td></tr>
+<tr><td>6</td><td><code>depth_exceeded</code></td><td><code>grammar</code></td></tr>
+<tr><td>7</td><td><code>duplicate_key</code></td><td><code>grammar</code></td></tr>
+<tr><td>8</td><td><code>duplicate_field</code></td><td><code>structure</code></td></tr>
+<tr><td>9</td><td><code>unknown_field</code></td><td><code>structure</code></td></tr>
+<tr><td>10</td><td><code>missing_field</code></td><td><code>structure</code></td></tr>
+<tr><td>11</td><td><code>bad_enum</code></td><td><code>structure</code></td></tr>
+<tr><td>12</td><td><code>trailing_bytes</code></td><td><code>document</code></td></tr>
+</tbody></table></div>
+
+<footer>
+<p><a href="index.html">Overview</a> · <a href="cases.html">Cases</a> · <a href="reference.html">Reference</a> · <a href="evidence.html">Evidence</a> · <a href="coverage.html">Coverage</a> · <a href="adopt.html">Adopt</a> ·
+<a href="https://github.com/openabstractions">github.com/openabstractions</a></p>
+</footer>
+</main>
+</html>

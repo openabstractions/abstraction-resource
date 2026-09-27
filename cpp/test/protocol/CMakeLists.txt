@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(resource_protocol_consumer LANGUAGES CXX)
+find_package(abstraction_resource CONFIG REQUIRED)
+add_executable(resource_protocol_consumer main.cpp)
+target_link_libraries(resource_protocol_consumer PRIVATE abstraction::resource_client)
+enable_testing()
+add_test(NAME resource_protocol_consumer COMMAND resource_protocol_consumer)

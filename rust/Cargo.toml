@@ -1,0 +1,8 @@
+[package]
+name = "abstraction-resource-client"
+version = "0.0.0"
+edition = "2021"
+description = "Hand-written typed client over the generated abstraction.resource records"
+
+[dependencies]
+abstraction-frame = { path = "../../abstraction-identity/rust-frame" }
