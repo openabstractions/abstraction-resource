@@ -1,6 +1,7 @@
 package service
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -259,11 +260,26 @@ func TestOwnKeepsOnlyTheCallersProgram(t *testing.T) {
 		{Program: `C:\comfy\python.exe`, Amount: 5 << 30, Evidence: wire.EvidenceVerified},
 		{Program: `C:\lms\llama-server.exe`, Amount: 19 << 30, Evidence: wire.EvidenceVerified},
 	}
-	kept := own(rows, `C:\lms\llama-server.exe`)
+	kept := own(rows, `C:\lms\llama-server.exe`, "")
 	if len(kept) != 2 {
 		t.Fatalf("a program with two processes sees %d of its own rows: %+v", len(kept), kept)
 	}
-	if len(own(rows, `C:\other\app.exe`)) != 0 {
+	if len(own(rows, `C:\other\app.exe`, "")) != 0 {
 		t.Fatal("a program with no hold saw somebody else's row")
+	}
+}
+
+func TestOwnKeepsBoundImageAndPackagedSubjectClaims(t *testing.T) {
+	image := self(t)
+	subject := "msix:Example_abcdefghijklm"
+	rows := []wire.Holder{
+		{Program: image, Evidence: wire.EvidenceVerified},
+		{Program: subject, Evidence: wire.EvidenceClaimed},
+		{Program: filepath.Join(t.TempDir(), "other.exe"), Evidence: wire.EvidenceVerified},
+		{Program: "host:other", Evidence: wire.EvidenceClaimed},
+	}
+	kept := own(rows, subject, image)
+	if len(kept) != 2 || kept[0].Program != image || kept[1].Program != subject {
+		t.Fatalf("a packaged caller read rows outside its bound image and subject: %+v", kept)
 	}
 }

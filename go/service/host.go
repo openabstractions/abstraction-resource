@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -262,36 +263,44 @@ func (r *receiver) Holders(resource string, fresh bool) (wire.HoldersResult, err
 	if !narrow {
 		return wire.HoldersResult{Outcome: wire.ResourceCallOutcomeOk, State: &state}, nil
 	}
-	program, err := r.program()
+	program, image, err := r.programs()
 	if err != nil {
 		return wire.HoldersResult{}, err
 	}
-	state.Holders = own(state.Holders, program)
+	state.Holders = own(state.Holders, program, image)
 	return wire.HoldersResult{Outcome: wire.ResourceCallOutcomeOk, State: &state}, nil
 }
 
-// own keeps the rows of one program.
-func own(rows []wire.Holder, program string) []wire.Holder {
+// own keeps claims named for the caller's subject and instrument rows named
+// for its bound image. Windows may report a short DOS path for that image.
+func own(rows []wire.Holder, program, image string) []wire.Holder {
 	out := []wire.Holder{}
 	for _, row := range rows {
-		if row.Program == program {
+		if row.Program == program || (filepath.IsAbs(row.Program) &&
+			identity.CanonicalProgramPath(filepath.Clean(row.Program)) == image) {
 			out = append(out, row)
 		}
 	}
 	return out
 }
 
-// program is the caller's subject program, as rights names it.
-func (r *receiver) program() (string, error) {
+// programs returns the caller's rights subject and its bound image path. A
+// packaged caller uses its package family as the subject, while an instrument
+// still names its process by image path.
+func (r *receiver) programs() (string, string, error) {
 	peer, err := r.peer()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	program, err := identity.SubjectProgram(peer, identity.ProofBound)
 	if err != nil {
-		return "", &wire.ServiceError{Code: wire.ServiceErrorCodeCallerRefused, Message: "the caller's program could not be named"}
+		return "", "", &wire.ServiceError{Code: wire.ServiceErrorCodeCallerRefused, Message: "the caller's program could not be named"}
 	}
-	return program, nil
+	path, err := peer.Path.AtLeast(Bound.Path)
+	if err != nil {
+		return "", "", &wire.ServiceError{Code: wire.ServiceErrorCodeCallerRefused, Message: "the caller's image could not be named"}
+	}
+	return program, identity.CanonicalProgramPath(filepath.Clean(path)), nil
 }
 
 func (r *receiver) peer() (*identity.Peer, error) {

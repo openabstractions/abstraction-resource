@@ -141,7 +141,7 @@ func self(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Clean(path)
+	return identity.CanonicalProgramPath(filepath.Clean(path))
 }
 
 func cardTable(t *testing.T) *Table {
