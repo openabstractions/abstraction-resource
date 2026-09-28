@@ -276,8 +276,8 @@ func (r *receiver) Holders(resource string, fresh bool) (wire.HoldersResult, err
 func own(rows []wire.Holder, program, image string) []wire.Holder {
 	out := []wire.Holder{}
 	for _, row := range rows {
-		if row.Program == program || (filepath.IsAbs(row.Program) &&
-			identity.CanonicalProgramPath(filepath.Clean(row.Program)) == image) {
+		if identity.SameSubjectProgram(row.Program, program) || (filepath.IsAbs(row.Program) &&
+			identity.SameSubjectProgram(row.Program, image)) {
 			out = append(out, row)
 		}
 	}

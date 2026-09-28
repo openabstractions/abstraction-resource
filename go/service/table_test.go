@@ -255,16 +255,18 @@ func TestResourcesUnionOfInstrumentAndClaims(t *testing.T) {
 // The own-rows rule, as the host applies it to a refused caller: the rows of
 // the caller's program and nothing else (CONTRACT.md RES-T4).
 func TestOwnKeepsOnlyTheCallersProgram(t *testing.T) {
+	caller := filepath.Join(t.TempDir(), "lms", "llama-server.exe")
+	other := filepath.Join(t.TempDir(), "comfy", "python.exe")
 	rows := []wire.Holder{
-		{Program: `C:\lms\llama-server.exe`, Amount: 17 << 30, Evidence: wire.EvidenceVerified},
-		{Program: `C:\comfy\python.exe`, Amount: 5 << 30, Evidence: wire.EvidenceVerified},
-		{Program: `C:\lms\llama-server.exe`, Amount: 19 << 30, Evidence: wire.EvidenceVerified},
+		{Program: caller, Amount: 17 << 30, Evidence: wire.EvidenceVerified},
+		{Program: other, Amount: 5 << 30, Evidence: wire.EvidenceVerified},
+		{Program: caller, Amount: 19 << 30, Evidence: wire.EvidenceVerified},
 	}
-	kept := own(rows, `C:\lms\llama-server.exe`, "")
+	kept := own(rows, caller, "")
 	if len(kept) != 2 {
 		t.Fatalf("a program with two processes sees %d of its own rows: %+v", len(kept), kept)
 	}
-	if len(own(rows, `C:\other\app.exe`, "")) != 0 {
+	if len(own(rows, filepath.Join(t.TempDir(), "other", "app.exe"), "")) != 0 {
 		t.Fatal("a program with no hold saw somebody else's row")
 	}
 }
