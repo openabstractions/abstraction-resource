@@ -114,6 +114,20 @@ struct AcquireResult {
  2: optional Lease lease(omit="absent")
  3: required list<YieldRecord> asked
 }(unknown_fields="refuse",doc="lease is present exactly for acquired. asked lists every holder the service asked to yield for this request, in order, whatever the outcome.")
+enum AcquireFreeOutcome {
+ 1: acquired
+ 2: insufficient
+ 3: not_permitted
+ 4: unavailable
+ 5: invalid
+ 6: forbidden
+ 7: held
+}(unknown="refuse",reader="act")
+struct AcquireFreeResult {
+ 1: required AcquireFreeOutcome outcome
+ 2: optional Lease lease(omit="absent")
+ 3: required list<YieldRecord> asked
+}(unknown_fields="refuse",doc="lease is present exactly for acquired. asked is always empty: AcquireFree asks nobody to yield. Its outcomes belong to this new method; Acquire retains its published closed vocabulary.")
 struct YieldRequest {
  1: required string id
  2: required string resource
@@ -162,6 +176,7 @@ struct ProcessBindResult {
 }(unknown_fields="refuse",doc="bound permits a verified child process's measured bytes to offset this lease's admission reservation. unverifiable and refused leave the full reservation in place; no process identity is published in the holder table.")
 service Leases {
  AcquireResult Acquire(1:string resource,2:i64 amount,3:i64 wait_ms)(doc="Ask to reserve amount bytes for admission of the bound caller, waiting up to wait_ms (0..120000) for holders to yield. The reservation is not a physical usage quota. Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when capacity is known and amount exceeds it), then holders are asked in the service's order and the result is acquired or holders_refused. Nothing is killed.")
+ AcquireFreeResult AcquireFree(1:string resource,2:i64 amount)(doc="Reserve amount bytes for the bound caller only from what is free now, asking nobody: a request that can take nothing from another holder, such as speculative work (RES-L6). Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when the pool is known and amount exceeds it), then one grant decision under the book's lock: acquired when amount fits what is free, or when the resource has no pool and nothing holds it, otherwise held. asked is always empty: no yield request is ever sent.")
  LeaseChangeResult Renew(1:string lease)(doc="Extend renew_by of the bound caller's own lease.")
  LeaseChangeResult Release(1:string lease)(doc="End the bound caller's own lease now.")
  ObserveResult Observe(1:string cursor,2:i64 wait_ms)(doc="Yield requests addressed to the bound caller since cursor, waiting up to wait_ms (0..30000) for one. Each request names the lease to yield. A holder that never observes is asked through its adapter when the service has one, and is otherwise recorded as unanswered.")

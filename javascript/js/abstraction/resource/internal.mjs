@@ -149,6 +149,16 @@ export const AcquireOutcome = Object.freeze({
   Forbidden: "forbidden",
 });
 
+export const AcquireFreeOutcome = Object.freeze({
+  Acquired: "acquired",
+  Insufficient: "insufficient",
+  NotPermitted: "not_permitted",
+  Unavailable: "unavailable",
+  Invalid: "invalid",
+  Forbidden: "forbidden",
+  Held: "held",
+});
+
 export const YieldAnswer = Object.freeze({
   Yielded: "yielded",
   Refused: "refused",
@@ -444,6 +454,34 @@ function writeAcquireResult(out, v, depth) {
   out.byte(0x7d);
 }
 
+function writeAcquireFreeResult(out, v, depth) {
+    if (typeof v.outcome !== "string") throw new Refusal("wrong_type",0);
+    if (v.outcome !== "acquired" && v.outcome !== "insufficient" && v.outcome !== "not_permitted" && v.outcome !== "unavailable" && v.outcome !== "invalid" && v.outcome !== "forbidden" && v.outcome !== "held") { throw new Refusal("bad_enum",0); }
+  out.byte(0x7b);
+  out.byte(0x0a);
+  pad(out, depth + 1);
+  esc(out, "outcome");
+  out.ascii(": ");
+  esc(out, v.outcome);
+  if (v.lease !== undefined && v.lease !== null) {
+    out.byte(0x2c);
+    out.byte(0x0a);
+    pad(out, depth + 1);
+    esc(out, "lease");
+    out.ascii(": ");
+    writeLease(out, v.lease, depth + 1);
+  }
+  out.byte(0x2c);
+  out.byte(0x0a);
+  pad(out, depth + 1);
+  esc(out, "asked");
+  out.ascii(": ");
+  writeList(out, v.asked, depth + 1, writeYieldRecord);
+  out.byte(0x0a);
+  pad(out, depth);
+  out.byte(0x7d);
+}
+
 function writeYieldRequest(out, v, depth) {
   out.byte(0x7b);
   out.byte(0x0a);
@@ -663,6 +701,24 @@ function writeOALeasesAcquireArguments(out, v, depth) {
   out.byte(0x7d);
 }
 
+function writeOALeasesAcquireFreeArguments(out, v, depth) {
+  out.byte(0x7b);
+  out.byte(0x0a);
+  pad(out, depth + 1);
+  esc(out, "resource");
+  out.ascii(": ");
+  esc(out, v.resource);
+  out.byte(0x2c);
+  out.byte(0x0a);
+  pad(out, depth + 1);
+  esc(out, "amount");
+  out.ascii(": ");
+  num(out, v.amount);
+  out.byte(0x0a);
+  pad(out, depth);
+  out.byte(0x7d);
+}
+
 function writeOALeasesRenewArguments(out, v, depth) {
   out.byte(0x7b);
   out.byte(0x0a);
@@ -864,6 +920,18 @@ function writeOALeasesAcquireResult(out, v, depth) {
   esc(out, "value");
   out.ascii(": ");
   writeAcquireResult(out, v.value, depth + 1);
+  out.byte(0x0a);
+  pad(out, depth);
+  out.byte(0x7d);
+}
+
+function writeOALeasesAcquireFreeResult(out, v, depth) {
+  out.byte(0x7b);
+  out.byte(0x0a);
+  pad(out, depth + 1);
+  esc(out, "value");
+  out.ascii(": ");
+  writeAcquireFreeResult(out, v.value, depth + 1);
   out.byte(0x0a);
   pad(out, depth);
   out.byte(0x7d);
@@ -1358,6 +1426,13 @@ export function newAcquireResult() {
   return { outcome: "", lease: null, asked: [] };
 }
 
+// lease is present exactly for acquired. asked is always empty: AcquireFree
+// asks nobody to yield. Its outcomes belong to this new method; Acquire retains
+// its published closed vocabulary.
+export function newAcquireFreeResult() {
+  return { outcome: "", lease: null, asked: [] };
+}
+
 // A request that this holder give back the named lease of amount bytes of
 // resource. reason names the program that asked, as rights names it.
 export function newYieldRequest() {
@@ -1411,6 +1486,10 @@ function newOALeasesAcquireArguments() {
   return { resource: "", amount: 0n, waitMs: 0n };
 }
 
+function newOALeasesAcquireFreeArguments() {
+  return { resource: "", amount: 0n };
+}
+
 function newOALeasesRenewArguments() {
   return { lease: "" };
 }
@@ -1453,6 +1532,10 @@ function newOATableHoldersResult() {
 
 function newOALeasesAcquireResult() {
   return { value: newAcquireResult() };
+}
+
+function newOALeasesAcquireFreeResult() {
+  return { value: newAcquireFreeResult() };
 }
 
 function newOALeasesRenewResult() {
@@ -1852,6 +1935,50 @@ function readAcquireResult(r) {
   r.depth--;
   if (((seen & 5) >>> 0) !== 5) throw r.refuse("missing_field");
     if (v.outcome !== "acquired" && v.outcome !== "insufficient" && v.outcome !== "holders_refused" && v.outcome !== "not_permitted" && v.outcome !== "unavailable" && v.outcome !== "invalid" && v.outcome !== "forbidden") { throw r.refuse("bad_enum"); }
+  return v;
+}
+
+function readAcquireFreeResult(r) {
+  if (r.at() !== 0x7b) throw r.refuse("wrong_type");
+  r.enter();
+  r.pos++;
+  const v = newAcquireFreeResult();
+  let seen = 0;
+  r.ws();
+  if (r.at() !== 0x7d) {
+    for (;;) {
+      r.ws();
+      if (r.at() !== 0x22) throw r.refuse("malformed");
+      const key = r.string();
+      r.ws();
+      if (r.at() !== 0x3a) throw r.refuse("malformed");
+      r.pos++;
+      r.ws();
+      if (key === "outcome") {
+        if (seen & 1) throw r.refuse("duplicate_field");
+        seen |= 1;
+        v.outcome = r.string();
+      } else if (key === "lease") {
+        if (seen & 2) throw r.refuse("duplicate_field");
+        seen |= 2;
+        v.lease = readLease(r);
+      } else if (key === "asked") {
+        if (seen & 4) throw r.refuse("duplicate_field");
+        seen |= 4;
+        v.asked = readList(r, readYieldRecord);
+      } else {
+        throw r.refuse("unknown_field");
+      }
+      r.ws();
+      if (r.at() !== 0x2c) break;
+      r.pos++;
+    }
+  }
+  if (r.at() !== 0x7d) throw r.refuse("malformed");
+  r.pos++;
+  r.depth--;
+  if (((seen & 5) >>> 0) !== 5) throw r.refuse("missing_field");
+    if (v.outcome !== "acquired" && v.outcome !== "insufficient" && v.outcome !== "not_permitted" && v.outcome !== "unavailable" && v.outcome !== "invalid" && v.outcome !== "forbidden" && v.outcome !== "held") { throw r.refuse("bad_enum"); }
   return v;
 }
 
@@ -2292,6 +2419,45 @@ function readOALeasesAcquireArguments(r) {
   return v;
 }
 
+function readOALeasesAcquireFreeArguments(r) {
+  if (r.at() !== 0x7b) throw r.refuse("wrong_type");
+  r.enter();
+  r.pos++;
+  const v = newOALeasesAcquireFreeArguments();
+  let seen = 0;
+  r.ws();
+  if (r.at() !== 0x7d) {
+    for (;;) {
+      r.ws();
+      if (r.at() !== 0x22) throw r.refuse("malformed");
+      const key = r.string();
+      r.ws();
+      if (r.at() !== 0x3a) throw r.refuse("malformed");
+      r.pos++;
+      r.ws();
+      if (key === "resource") {
+        if (seen & 1) throw r.refuse("duplicate_field");
+        seen |= 1;
+        v.resource = r.string();
+      } else if (key === "amount") {
+        if (seen & 2) throw r.refuse("duplicate_field");
+        seen |= 2;
+        v.amount = r.integer(-9223372036854775808n, 9223372036854775807n);
+      } else {
+        throw r.refuse("unknown_field");
+      }
+      r.ws();
+      if (r.at() !== 0x2c) break;
+      r.pos++;
+    }
+  }
+  if (r.at() !== 0x7d) throw r.refuse("malformed");
+  r.pos++;
+  r.depth--;
+  if (((seen & 3) >>> 0) !== 3) throw r.refuse("missing_field");
+  return v;
+}
+
 function readOALeasesRenewArguments(r) {
   if (r.at() !== 0x7b) throw r.refuse("wrong_type");
   r.enter();
@@ -2726,6 +2892,41 @@ function readOALeasesAcquireResult(r) {
   return v;
 }
 
+function readOALeasesAcquireFreeResult(r) {
+  if (r.at() !== 0x7b) throw r.refuse("wrong_type");
+  r.enter();
+  r.pos++;
+  const v = newOALeasesAcquireFreeResult();
+  let seen = 0;
+  r.ws();
+  if (r.at() !== 0x7d) {
+    for (;;) {
+      r.ws();
+      if (r.at() !== 0x22) throw r.refuse("malformed");
+      const key = r.string();
+      r.ws();
+      if (r.at() !== 0x3a) throw r.refuse("malformed");
+      r.pos++;
+      r.ws();
+      if (key === "value") {
+        if (seen & 1) throw r.refuse("duplicate_field");
+        seen |= 1;
+        v.value = readAcquireFreeResult(r);
+      } else {
+        throw r.refuse("unknown_field");
+      }
+      r.ws();
+      if (r.at() !== 0x2c) break;
+      r.pos++;
+    }
+  }
+  if (r.at() !== 0x7d) throw r.refuse("malformed");
+  r.pos++;
+  r.depth--;
+  if (((seen & 1) >>> 0) !== 1) throw r.refuse("missing_field");
+  return v;
+}
+
 function readOALeasesRenewResult(r) {
   if (r.at() !== 0x7b) throw r.refuse("wrong_type");
   r.enter();
@@ -2978,6 +3179,7 @@ _serviceRecords["ResourcesResult"] = [["outcome","string","never"],["list","Reso
 _serviceRecords["Lease"] = [["id","string","never"],["resource","string","never"],["amount","i64","never"],["since","string","never"],["renewBy","string","never"],];
 _serviceRecords["YieldRecord"] = [["holder","string","never"],["amount","i64","never"],["answer","string","never"],["tookMs","i64","never"],];
 _serviceRecords["AcquireResult"] = [["outcome","string","never"],["lease","Lease","absent"],["asked","list<YieldRecord>","never"],];
+_serviceRecords["AcquireFreeResult"] = [["outcome","string","never"],["lease","Lease","absent"],["asked","list<YieldRecord>","never"],];
 _serviceRecords["YieldRequest"] = [["id","string","never"],["resource","string","never"],["amount","i64","never"],["reason","string","never"],["at","string","never"],["lease","string","never"],];
 _serviceRecords["YieldPage"] = [["requests","list<YieldRequest>","never"],["next","string","never"],];
 _serviceRecords["ObserveResult"] = [["outcome","string","never"],["page","YieldPage","absent"],];
@@ -2989,6 +3191,7 @@ _serviceRecords["ProcessBindResult"] = [["outcome","string","never"],];
 _serviceRecords["OATableResourcesArguments"] = [];
 _serviceRecords["OATableHoldersArguments"] = [["resource","string","never"],["fresh","bool","never"],];
 _serviceRecords["OALeasesAcquireArguments"] = [["resource","string","never"],["amount","i64","never"],["waitMs","i64","never"],];
+_serviceRecords["OALeasesAcquireFreeArguments"] = [["resource","string","never"],["amount","i64","never"],];
 _serviceRecords["OALeasesRenewArguments"] = [["lease","string","never"],];
 _serviceRecords["OALeasesReleaseArguments"] = [["lease","string","never"],];
 _serviceRecords["OALeasesObserveArguments"] = [["cursor","string","never"],["waitMs","i64","never"],];
@@ -3000,6 +3203,7 @@ _serviceRecords["OAServiceError"] = [["code","string","never"],["message","strin
 _serviceRecords["OATableResourcesResult"] = [["value","ResourcesResult","never"],];
 _serviceRecords["OATableHoldersResult"] = [["value","HoldersResult","never"],];
 _serviceRecords["OALeasesAcquireResult"] = [["value","AcquireResult","never"],];
+_serviceRecords["OALeasesAcquireFreeResult"] = [["value","AcquireFreeResult","never"],];
 _serviceRecords["OALeasesRenewResult"] = [["value","LeaseChangeResult","never"],];
 _serviceRecords["OALeasesReleaseResult"] = [["value","LeaseChangeResult","never"],];
 _serviceRecords["OALeasesObserveResult"] = [["value","ObserveResult","never"],];
@@ -3068,6 +3272,19 @@ export class LeasesClient {
     const _request = _serviceRequest("abstraction.resource/leases@1", "Acquire", _payload);
     const _reply = _serviceResponse(await this._transport.exchangeFrame(_request), "abstraction.resource/leases@1", "Acquire");
     const _result = _serviceDecode(readOALeasesAcquireResult, _reply, 1);
+    return _result.value;
+  }
+
+  async acquireFree(resource, amount) {
+    const _args = newOALeasesAcquireFreeArguments();
+    _args.resource = resource;
+    _args.amount = amount;
+    _serviceCheck("OALeasesAcquireFreeArguments", _args);
+    const _payload = _serviceEncode(writeOALeasesAcquireFreeArguments, _args, 1);
+    _serviceDecode(readOALeasesAcquireFreeArguments, _payload, 1);
+    const _request = _serviceRequest("abstraction.resource/leases@1", "AcquireFree", _payload);
+    const _reply = _serviceResponse(await this._transport.exchangeFrame(_request), "abstraction.resource/leases@1", "AcquireFree");
+    const _result = _serviceDecode(readOALeasesAcquireFreeResult, _reply, 1);
     return _result.value;
   }
 

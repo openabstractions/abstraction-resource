@@ -8,6 +8,18 @@ interface FrameTransport {
   writeFrame(frame: Uint8Array): Promise<void>;
 }
 
+export type AcquireFreeOutcome = (typeof AcquireFreeOutcome)[keyof typeof AcquireFreeOutcome];
+export declare const AcquireFreeOutcome: Readonly<{ Acquired: "acquired"; Insufficient: "insufficient"; NotPermitted: "not_permitted"; Unavailable: "unavailable"; Invalid: "invalid"; Forbidden: "forbidden"; Held: "held" }>;
+
+// lease is present exactly for acquired. asked is always empty: AcquireFree
+// asks nobody to yield. Its outcomes belong to this new method; Acquire retains
+// its published closed vocabulary.
+export interface AcquireFreeResult {
+  outcome: AcquireFreeOutcome;
+  lease: Lease | null;
+  asked: YieldRecord[];
+}
+
 export type AcquireOutcome = (typeof AcquireOutcome)[keyof typeof AcquireOutcome];
 export declare const AcquireOutcome: Readonly<{ Acquired: "acquired"; Insufficient: "insufficient"; HoldersRefused: "holders_refused"; NotPermitted: "not_permitted"; Unavailable: "unavailable"; Invalid: "invalid"; Forbidden: "forbidden" }>;
 
@@ -88,6 +100,8 @@ export declare class LeasesClient {
   constructor(transport: FrameTransport);
   /** Ask to reserve amount bytes for admission of the bound caller, waiting up to wait_ms (0..120000) for holders to yield. The reservation is not a physical usage quota. Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when capacity is known and amount exceeds it), then holders are asked in the service's order and the result is acquired or holders_refused. Nothing is killed. */
   acquire(resource: string, amount: bigint, waitMs: bigint): Promise<AcquireResult>;
+  /** Reserve amount bytes for the bound caller only from what is free now, asking nobody: a request that can take nothing from another holder, such as speculative work (RES-L6). Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when the pool is known and amount exceeds it), then one grant decision under the book's lock: acquired when amount fits what is free, or when the resource has no pool and nothing holds it, otherwise held. asked is always empty: no yield request is ever sent. */
+  acquireFree(resource: string, amount: bigint): Promise<AcquireFreeResult>;
   /** Extend renew_by of the bound caller's own lease. */
   renew(lease: string): Promise<LeaseChangeResult>;
   /** End the bound caller's own lease now. */
@@ -202,6 +216,8 @@ export declare function decode(data: Uint8Array): ResourceState;
 export declare function encode(v: ResourceState): Uint8Array;
 
 export declare const knownResources: readonly ["card:0", "memory", "awake"];
+
+export declare function newAcquireFreeResult(): AcquireFreeResult;
 
 export declare function newAcquireResult(): AcquireResult;
 

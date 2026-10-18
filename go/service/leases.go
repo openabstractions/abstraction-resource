@@ -169,16 +169,28 @@ type Book struct {
 	lifetime time.Duration
 	settle   time.Duration
 	inspect  func(int) (instrument.ProcessInfo, error)
+	// keepAwake takes the platform's wake request; awake is its release
+	// while an acquired lease of resource awake lives (RES-A1).
+	keepAwake func(why string) (func(), error)
+	awake     func()
+	// awakeRefused is set while the platform refuses the wake request, so
+	// the refusal is recorded once.
+	awakeRefused bool
 
-	hold  Policy
-	yield HolderPolicy
+	hold     Policy
+	yield    HolderPolicy
+	standing SubjectPolicy
 
 	mu      sync.Mutex
 	leases  map[string]*record
 	waiting map[uint64]*question
 	held    map[string]string
 	changed map[string]time.Time
-	seq     uint64
+	// asking counts, per resource and under mu, the plain Acquire calls in
+	// their ask loop. AcquireFree reads held while any is: bytes their
+	// yields free are theirs (RES-L6).
+	asking map[string]int
+	seq    uint64
 }
 
 // BookOptions configures a Book. Table is required.
@@ -209,7 +221,24 @@ type BookOptions struct {
 	// InspectProcess supplies process relation evidence. Nil uses the local
 	// platform inspector; injection permits deterministic refusal tests.
 	InspectProcess func(int) (instrument.ProcessInfo, error)
+	// KeepAwake takes the platform's wake request and returns its release.
+	// The book holds one request while any lease of resource awake granted
+	// through Acquire lives, and releases it when the last one ends
+	// (RES-A1). Nil records such leases without a platform request; the
+	// connection-owned wake hold keeps its own request in rights (RES-A1).
+	KeepAwake func(why string) (release func(), err error)
+	// Standing decides ActionHold again for a live lease's holder, by the
+	// subject the lease names, with no call in flight and asking nobody.
+	// Renew asks it before it extends an acquired lease, and Recheck asks it
+	// for the holder of every acquired lease and ends each lease it refuses
+	// (RES-L7). Nil rechecks nothing.
+	Standing SubjectPolicy
 }
+
+// A SubjectPolicy decides one action on one resource for a subject a lease
+// names. Wrap ErrPolicyUnavailable when no decision could be obtained; every
+// other error is a refusal.
+type SubjectPolicy func(ctx context.Context, who Subject, action, resource string) error
 
 // OpenBook reads the leases a previous run left, drops those whose renew_by
 // has passed, and answers from there on. A file that cannot be read is an
@@ -220,9 +249,10 @@ func OpenBook(options BookOptions) (*Book, error) {
 	}
 	b := &Book{table: options.Table, attached: options.Attached, audit: options.Audit,
 		path: options.Path, now: options.Now, lifetime: options.Lifetime, settle: options.Settle,
-		hold: options.Hold, yield: options.Yield, inspect: options.InspectProcess,
-		leases: map[string]*record{}, waiting: map[uint64]*question{},
-		held: map[string]string{}, changed: map[string]time.Time{}}
+		hold: options.Hold, yield: options.Yield, standing: options.Standing, inspect: options.InspectProcess,
+		keepAwake: options.KeepAwake,
+		leases:    map[string]*record{}, waiting: map[uint64]*question{},
+		held: map[string]string{}, changed: map[string]time.Time{}, asking: map[string]int{}}
 	if b.now == nil {
 		b.now = time.Now
 	}
@@ -268,7 +298,57 @@ func OpenBook(options BookOptions) (*Book, error) {
 			b.seq = n
 		}
 	}
+	b.mu.Lock()
+	b.syncAwake()
+	b.mu.Unlock()
 	return b, nil
+}
+
+// syncAwake holds the platform's wake request while any lease of resource
+// awake granted through Acquire lives whose holder also holds a lease on a
+// card, and releases it once none does (RES-A1, RES-G5). The request the
+// runtime passes keeps the display on, which also holds off the screen saver
+// and the lock: it is held only while GPU work holds a card, never for a
+// wake lease alone. The caller holds the lock; every change to the book
+// reaches it through save.
+// cardPrefix begins every card resource, card:0 first.
+const cardPrefix = "card:"
+
+func (b *Book) syncAwake() {
+	if b.keepAwake == nil {
+		return
+	}
+	carding := map[Subject]bool{}
+	for _, lease := range b.leases {
+		if strings.HasPrefix(lease.Resource, cardPrefix) && !lease.held {
+			carding[lease.subject()] = true
+		}
+	}
+	live := 0
+	for _, lease := range b.leases {
+		if lease.Resource == ResourceAwake && !lease.held && carding[lease.subject()] {
+			live++
+		}
+	}
+	switch {
+	case live > 0 && b.awake == nil:
+		release, err := b.keepAwake(fmt.Sprintf("%d wake lease(s) of abstraction.resource", live))
+		if err != nil {
+			// One record per refusal, not one per save while it lasts.
+			if !b.awakeRefused {
+				b.awakeRefused = true
+				b.record(auditRecord{Event: "refused", Resource: ResourceAwake, Answer: oneLine("platform: " + err.Error())})
+			}
+			return
+		}
+		b.awake, b.awakeRefused = release, false
+	case live == 0:
+		b.awakeRefused = false
+		if b.awake != nil {
+			b.awake()
+			b.awake = nil
+		}
+	}
 }
 
 // serial reads the counter out of a lease id so a restart never reissues one.
@@ -308,6 +388,9 @@ func (b *Book) Claims() Claims {
 // allocated on the asker's behalf; the lease is a grant against the table.
 func (b *Book) Acquire(ctx context.Context, who Subject, peer *identity.Peer, resource string, amount, waitMs int64) wire.AcquireResult {
 	asked := []wire.YieldRecord{}
+	if ctx.Err() != nil {
+		return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
+	}
 	if resource == "" || amount < 0 || waitMs < 0 || time.Duration(waitMs)*time.Millisecond > MaxAcquireWait {
 		return wire.AcquireResult{Outcome: wire.AcquireOutcomeInvalid, Asked: asked}
 	}
@@ -335,10 +418,26 @@ func (b *Book) Acquire(ctx context.Context, who Subject, peer *identity.Peer, re
 		return wire.AcquireResult{Outcome: wire.AcquireOutcomeInsufficient, Asked: asked}
 	}
 	b.mark(ctx, resource)
-	if result, ok := b.tryGrant(state, samples, pool, who, resource, amount, asked); ok {
+	if result, ok := b.tryGrant(ctx, state, samples, pool, who, resource, amount, asked); ok {
 		return result
 	}
-	// Nothing was free without asking. Each pass below asks whatever RES-L2
+	if ctx.Err() != nil {
+		return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
+	}
+	// Nothing was free without asking. From here until this call returns,
+	// the bytes its yields free are its own: a no-yield acquire of the same
+	// resource reads held meanwhile (RES-L6).
+	b.mu.Lock()
+	b.asking[resource]++
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		if b.asking[resource]--; b.asking[resource] <= 0 {
+			delete(b.asking, resource)
+		}
+		b.mu.Unlock()
+	}()
+	// Each pass below asks whatever RES-L2
 	// still has left to ask and then decides the grant under the lock again:
 	// the freed bytes a yield reports are not this asker's until nobody else
 	// has spent them first (RES-L2). A pass where nothing was actually
@@ -347,8 +446,14 @@ func (b *Book) Acquire(ctx context.Context, who Subject, peer *identity.Peer, re
 	// ask sequence, bounded by the caller's own deadline.
 	deadline := b.now().Add(time.Duration(waitMs) * time.Millisecond)
 	for {
+		if ctx.Err() != nil {
+			return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
+		}
 		more := b.ask(ctx, who, resource, amount, pool, deadline)
 		asked = append(asked, more...)
+		if ctx.Err() != nil {
+			return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
+		}
 		yielded := false
 		for _, entry := range more {
 			if entry.Answer == AnswerYielded && entry.Amount > 0 {
@@ -360,8 +465,11 @@ func (b *Book) Acquire(ctx context.Context, who Subject, peer *identity.Peer, re
 		if err != nil {
 			return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
 		}
-		if result, ok := b.tryGrant(state, samples, pool, who, resource, amount, asked); ok {
+		if result, ok := b.tryGrant(ctx, state, samples, pool, who, resource, amount, asked); ok {
 			return result
+		}
+		if ctx.Err() != nil {
+			return wire.AcquireResult{Outcome: wire.AcquireOutcomeUnavailable, Asked: asked}
 		}
 		if !yielded || !b.now().Before(deadline) {
 			break
@@ -369,6 +477,49 @@ func (b *Book) Acquire(ctx context.Context, who Subject, peer *identity.Peer, re
 	}
 	b.record(auditRecord{Event: "refused", Asker: who.Program, Resource: resource, Amount: amount, Answer: "holders_refused"})
 	return wire.AcquireResult{Outcome: wire.AcquireOutcomeHoldersRefused, Asked: asked}
+}
+
+// AcquireFree is the no-yield acquire (CONTRACT.md RES-L6): Acquire's
+// rights decision and table read, then one grant decision under the lock
+// from what is free, and held when it does not fit. It never asks a holder,
+// so asked is always empty, and the decision and the grant are one step: no
+// read of the table can go stale between them.
+func (b *Book) AcquireFree(ctx context.Context, who Subject, peer *identity.Peer, resource string, amount int64) wire.AcquireFreeResult {
+	asked := []wire.YieldRecord{}
+	if ctx.Err() != nil {
+		return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeUnavailable, Asked: asked}
+	}
+	if resource == "" || amount < 0 || who.Program == "" {
+		return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeInvalid, Asked: asked}
+	}
+	if b.hold != nil {
+		err := b.holdDecision(ctx, peer, resource)
+		switch {
+		case errors.Is(err, ErrPolicyUnavailable):
+			b.record(auditRecord{Event: "refused", Asker: who.Program, Resource: resource, Amount: amount, Answer: "unavailable"})
+			return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeUnavailable, Asked: asked}
+		case err != nil:
+			b.record(auditRecord{Event: "refused", Asker: who.Program, Resource: resource, Amount: amount, Answer: "not_permitted"})
+			return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeNotPermitted, Asked: asked}
+		}
+	}
+	state, samples, err := b.table.snapshot(resource, true)
+	if err != nil {
+		return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeUnavailable, Asked: asked}
+	}
+	pool := b.pool(resource, state.Capacity)
+	if pool > 0 && amount > pool {
+		b.record(auditRecord{Event: "refused", Asker: who.Program, Resource: resource, Amount: amount, Answer: "insufficient"})
+		return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeInsufficient, Asked: asked}
+	}
+	if result, ok := b.tryGrantFree(ctx, state, samples, pool, who, resource, amount); ok {
+		return result
+	}
+	if ctx.Err() != nil {
+		return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeUnavailable, Asked: asked}
+	}
+	b.record(auditRecord{Event: "refused", Asker: who.Program, Resource: resource, Amount: amount, Answer: "held"})
+	return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeHeld, Asked: asked}
 }
 
 // holdDecision asks the configured policy for ActionHold on the resource.
@@ -702,8 +853,12 @@ func (b *Book) askLease(ctx context.Context, who Subject, live *record, resource
 // section, so a concurrent tryGrant on the same book cannot also spend them
 // (RES-L2). It reports whether the grant was made; a caller that loses the
 // race asks again or reads holders_refused.
-func (b *Book) tryGrant(state wire.ResourceState, samples []instrument.Sample, pool int64, who Subject, resource string, amount int64, asked []wire.YieldRecord) (wire.AcquireResult, bool) {
+func (b *Book) tryGrant(ctx context.Context, state wire.ResourceState, samples []instrument.Sample, pool int64, who Subject, resource string, amount int64, asked []wire.YieldRecord) (wire.AcquireResult, bool) {
 	b.mu.Lock()
+	if ctx.Err() != nil {
+		b.mu.Unlock()
+		return wire.AcquireResult{}, false
+	}
 	if b.freeLocked(state, samples, pool) < amount {
 		b.mu.Unlock()
 		return wire.AcquireResult{}, false
@@ -712,6 +867,35 @@ func (b *Book) tryGrant(state wire.ResourceState, samples []instrument.Sample, p
 	b.mu.Unlock()
 	b.record(auditRecord{Event: "acquired", Asker: who.Program, Lease: lease.ID, Resource: resource, Amount: amount, Answer: "acquired"})
 	return wire.AcquireResult{Outcome: wire.AcquireOutcomeAcquired, Lease: &lease, Asked: asked}, true
+}
+
+// tryGrantFree is AcquireFree's one step under the lock: nothing granted
+// while a plain Acquire of the resource asks holders to yield, else
+// tryGrant's arithmetic (RES-L6).
+func (b *Book) tryGrantFree(ctx context.Context, state wire.ResourceState, samples []instrument.Sample, pool int64, who Subject, resource string, amount int64) (wire.AcquireFreeResult, bool) {
+	b.mu.Lock()
+	if ctx.Err() != nil || b.asking[resource] > 0 || pool <= 0 && b.leasedLocked(resource) || b.freeLocked(state, samples, pool) < amount {
+		b.mu.Unlock()
+		return wire.AcquireFreeResult{}, false
+	}
+	lease := b.grantLocked(who, resource, amount)
+	b.mu.Unlock()
+	b.record(auditRecord{Event: "acquired", Asker: who.Program, Lease: lease.ID, Resource: resource, Amount: amount, Answer: "acquired"})
+	return wire.AcquireFreeResult{Outcome: wire.AcquireFreeOutcomeAcquired, Lease: &lease, Asked: []wire.YieldRecord{}}, true
+}
+
+// leasedLocked reports whether a live lease of resource exists. A resource
+// with no pool is free to a no-yield acquire only while nothing holds it,
+// and a lease granted since the table was read holds it (RES-L6). The
+// caller holds the lock.
+func (b *Book) leasedLocked(resource string) bool {
+	b.expire(b.now())
+	for _, live := range b.leases {
+		if live.Resource == resource {
+			return true
+		}
+	}
+	return false
 }
 
 // grantLocked writes one lease and reports it. The caller holds the lock.
@@ -725,14 +909,32 @@ func (b *Book) grantLocked(who Subject, resource string, amount int64) wire.Leas
 	return live.lease()
 }
 
-// Renew extends the caller's own lease (RES-L4).
+// Renew extends the caller's own lease (RES-L4). An acquired lease, of a card
+// or of awake alike, is renewed only while ActionHold on its resource still
+// permits its holder, decided again for each renewal and fail-closed
+// (RES-L7): a refusal ends the lease now. A decision that cannot be obtained
+// leaves the lease standing with its renew_by unmoved and reports it applied,
+// so one transient outage costs the holder nothing, and the lease ends at
+// that renew_by only when every decision in the lifetime fails.
 func (b *Book) Renew(who Subject, id string) wire.LeaseChange {
+	unavailable := false
+	if err := b.standingOf(who, id); err != nil {
+		if !errors.Is(err, ErrPolicyUnavailable) {
+			b.release(id, "revoked")
+			return wire.LeaseChange{}
+		}
+		unavailable = true
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.expire(b.now())
 	live, ok := b.leases[id]
 	if !ok || !live.subject().same(who) {
 		return wire.LeaseChange{}
+	}
+	if unavailable {
+		lease := live.lease()
+		return wire.LeaseChange{Applied: true, Lease: &lease}
 	}
 	live.RenewBy = b.now().Add(b.lifetime)
 	b.save()
@@ -969,6 +1171,7 @@ func (b *Book) Leases() []wire.Lease {
 // reported through the audit and does not end the call: a lease the service is
 // keeping in memory is still a lease until it expires.
 func (b *Book) save() {
+	b.syncAwake()
 	if b.path == "" {
 		return
 	}

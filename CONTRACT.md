@@ -29,6 +29,7 @@ what was measured, linked from here and linking back.
 | T | table (`table@1`) |
 | L | leases (`leases@1`) |
 | A | the wake lease (`awake`) — this contract's one pre-existing use of the letter, kept from `RES-A1` for continuity (S3) |
+| G | GPU faults: a driver reset, standby and the provider kit's `gpufault` package |
 
 `A` (admission) and `E` (error and outcome) are otherwise reserved with one
 meaning in every contract (S12) and are not separately declared here: every
@@ -242,6 +243,23 @@ object read `yielded` with 20,799,488 bytes once and `unanswered` once.
 bytes, if still resident, MUST then be reported as a holder without a
 lease.
 
+A lock a holder keeps for the length of a load MUST NOT be needed by a
+periodic duty: the provider kit's `holder` renews every lease from its grant
+on, while any of its components acquires, starts, loads or stops. Renewal
+MUST NOT wait on anything a load can hold. The one lock it shares with a
+load is a lease's own, and that lock spans one `Renew` or one `Release` call.
+
+When a lease ends while its component readies, the holder stops that
+component, releases the lease and loads once more under a new lease; a
+second ending refuses the load with an acquire failure.
+
+The holder MUST release a component's lease only once its resource use is
+confirmed to end. A component whose exit was seen but not confirmed, such as
+a process tree whose supervisor could not confirm every descendant gone,
+keeps its lease record through an idle or liveness pass, a yield, a driver
+reset and the holder's close; it answers no yield. The holder owns this rule
+for every component (`holder.ExitConfirmer`).
+
 A lease whose lifetime is its holder's connection is the exception, and the
 wake lease is the only one today (RES-A1): it never ends on a clock and
 never survives a restart, because the connection that owned it did not
@@ -255,6 +273,68 @@ The order such a ceiling would impose is not RES-L2's own: when it ships, a
 lease queues by the amount ceiling its grant states rather than being
 reordered by `since`, the shape Kubernetes names `PriorityClass` with
 `preemptionPolicy: Never` — a class that queues and is never evicted.
+
+**[RES-L6] An acquire that asks nobody.** RES-L2's acquire asks holders to
+yield whenever a request does not fit what is free. `AcquireFree` is the
+same acquire for a request that may take nothing from another holder:
+speculative work such as inference's `preload@1` (inference INF-PL2), which
+holds the lowest standing by the coordinator's decision of 2026-10-03 under
+the open arbitration question of VISION 2026-09-06. It MUST decide
+`abstraction.resource/hold` as RES-L1 does and read `insufficient` as
+RES-L2 does. Then it MUST decide in one step under the book's lock, the
+same step that grants (RES-L2's free arithmetic): `acquired` when the
+request fits what is free, or when the resource has no pool and nothing
+holds it, the book's live leases read in that step included; otherwise
+`held` in its own `AcquireFreeOutcome`, carried by `AcquireFreeResult`.
+`AcquireOutcome` and `AcquireResult` retain their published closed shapes.
+It MUST NOT send a yield request, and its
+`asked` is always empty. No read of the table can go stale between the
+decision and the grant, so a concurrent `Acquire` either takes the bytes
+first and this reads `held`, or this grants first and that one finds them
+spent.
+
+While any `Acquire` of the same resource is in its ask loop, `AcquireFree`
+MUST read `held`, even when the request fits what is free. The bytes a
+yield frees belong to the acquire that asked for them, and the lowest
+standing never takes them. The book counts, per resource and under its
+lock, the `Acquire` calls that found nothing free and are asking, from the
+first ask until that call returns.
+
+The provider kit's holder serves it as `EnsureSpeculative`. A resident
+component is left as it is, and its idle clock is not touched. A missing
+component loads only through `AcquireFree`, under the component lock, and
+any failure, a prepare error or a refused acquire alike, refuses with no
+fallback to `Ensure`; the word of a refused acquire is `lease:held`. A
+resource service without `AcquireFree` answers `unknown_method`, and the
+holder reads that as `lease:held` too, so a speculative load against it
+loads nothing. A speculative load reserves no activity, so no yield is
+refused for it. A yield request cancels a speculative load under way, and
+the holder answers `yielded` once the component has stopped and the lease
+is released. Once real work joins the load, the load is that work's: a
+plain `Ensure` or `Begin` of the component waits on it, or the provider
+reports the component active. The yield then does not cancel it and is
+decided as for any holder, refused while the component is active.
+
+**[RES-L7] A lease lives only while its rule does.** RES-L1 decides
+`abstraction.resource/hold` once, at `Acquire`. The service MUST decide it
+again, asking nobody, for the subject a lease names and on the lease's own
+resource, a card and `awake` alike (abstraction-rights RIGHTS-R23):
+
+- before each `Renew`: a refusal ends the lease at once. A decision that
+  cannot be obtained leaves the lease standing, `applied` with its
+  `renew_by` unmoved, so one transient outage costs the holder nothing; the
+  lease ends at that `renew_by` only when every decision within one
+  lifetime (RES-L4) fails;
+- on each committed rights change, before the edit returns
+  (`DecisionPolicy.OnChange`), and on the host's expiry clock, which covers a
+  rule that expires: each lease its rule refuses ends, with `revoked` as the
+  audit answer, and a decision that cannot be obtained ends nothing there
+  (`Book.Recheck`).
+
+A connection-owned hold is ended by the service that owns its connection.
+The provider kit's holder reads a refused renewal as an ended lease and unloads
+the component that used it. The holder's next acquire is decided, and asked,
+as a first one is.
 
 ## Wake lease
 
@@ -284,6 +364,163 @@ readers of them keep working. A wake lease taken through `Acquire` instead
 is an ordinary lease and lives by `renew_by`; a holder that wants the
 connection's lifetime takes it through the service that owns its
 connection.
+
+A wake lease lives only while its rule does, as every acquired lease does
+(RES-L7). Once `abstraction.resource/hold` on `awake` no longer permits a
+holder (revoked, blocked or expired), the service MUST end every wake lease
+that holder acquired, and the platform request with the last one. The
+holder's next acquire is decided, and asked, as a first one is.
+
+An acquired wake lease keeps the machine awake while its holder holds a
+card. While any lease of `awake` granted through `Acquire` lives whose
+holder also holds a lease on a `card:<n>`, the service MUST hold one
+platform wake request (Windows `PowerSetRequest` with
+`PowerRequestSystemRequired` and `PowerRequestDisplayRequired`; macOS
+`caffeinate -di`), and MUST release it once no such pair lives: the last
+wake lease released or expired, or the last card lease of its holder. A
+wake lease with no card lease beside it is recorded and takes no request.
+The display is required because GPU work alone takes this lease and, on a
+Modern Standby machine, the display turning off is the standby entry: on
+2026-10-02 the Radeon 8060S machine entered standby on its display timeout
+under a system-required request, and a display-required one held it out
+through every GPU run (`research/live-runs/2026-10-02.md`, "Modern
+Standby"). An execution-required request alone keeps a process running in
+standby but does not hold standby off: measured the same day, standby
+began 30 s after a display request ended while an execution-required one
+was held, and the holding process wrote a line every second for 12 minutes
+with no gap; the GPU is refused in standby (RES-G4). The display request
+also holds off the screen saver and the lock, which is why it lives only
+beside a card lease. No system setting changes. Other holds, a download's, require the system alone. The
+composition supplies the platform request (`BookOptions.KeepAwake`); a book
+without one records the lease and keeps nothing awake. A provider running
+GPU work takes its wake lease this way (RES-G5) and never calls the
+platform itself.
+
+## GPU faults
+
+A GPU driver reset ends every engine on the adapter. On Windows it is a
+Timeout Detection and Recovery (TDR): a GPU dispatch running past the
+watchdog (about 2 s by default) makes the driver reset the adapter. On
+2026-10-01 the owner's Radeon 8060S reset three times: a research D3D12
+shader, PyTorch/ROCm MIOpen's live solver search during Modern Standby, and
+a wrapper padding attention to 27280 tokens on the SDPA math fallback (the
+last two in `research/live-runs/2026-10-01-rocm.md`, runs b and c). These
+rules are owned by the provider kit's `gpufault` package beside `holder`,
+because a reset is first a lease event: the engines the holder started are
+gone, and their leases must be given back. A provider composes one Guard,
+attaches its holders, and asks the Guard before every load and every GPU
+job.
+
+**[RES-G1] Detect.** A provider MUST read, without elevation, the platform's
+reset and standby records. On Windows a reset is triggered only by a record
+from a channel interactive users cannot write, with the expected provider
+GUID and the kernel as its writer: `Microsoft-Windows-WerKernel/Operational`
+1001 for a `WATCHDOG` or `*_WATCHDOG` component, from UserID `S-1-5-18` and
+process 4. Modern Standby entry and exit are
+`Microsoft-Windows-Kernel-Power` 506 and 507 in the System log, from
+`S-1-5-18` with Kernel-Power's GUID. The Application log, which interactive
+users and AppContainers may write (`wevtutil gl Application`: IU 0x3,
+S-1-15-2-1 0x2), and the System log's `Display` 4101, which names no
+provider GUID, only corroborate: their `LiveKernelEvent` 141 or 117 and
+4101 records join an open fault's record and never start one. A record of
+another channel, GUID or writer is no record. At start the last 506 or 507
+gives the standby state, and a 506 older than the last boot
+(Kernel-General 12) or with no known boot is set aside.
+
+An engine's own device-lost line is a reset only in that engine's own
+form (`providerhost/devicelost`: a line starting `ggml_vulkan: `, or
+libstdc++'s terminate or `what()` line for `vk::DeviceLostError`, after any
+progress bar the engine drew on that line; for modelhost's PyTorch engine,
+`oa-torch-engine: device-lost: ` and a HIP error name) and only once the engine exits
+or fails its readiness twice within 15 s. A marker inside caller text the
+engine echoes, or a line from an engine that keeps answering, is set aside
+with no fault and no quarantine strike.
+
+An engine that exits within the window (30 s) before or after a reset
+record is the reset's; the provider waits at most 10 s after an exit for a
+record to arrive, so a plain crash reads `engine:lost` no later than that.
+A source that cannot read the records MUST be reported and read as blind,
+never as a quiet machine; it is subscribed again after a backoff of 1 s
+doubling to a minute, with query errors tolerated so a missing
+WerKernel channel keeps the System log, and a subscription that stands
+clears the blindness. Records inside one window are one fault.
+
+On 2026-10-01 each of the three resets wrote WerKernel 1001 first and the
+Application log's LiveKernelEvent about ten seconds later; none wrote a
+Display 4101.
+
+**[RES-G2] Every engine on the adapter is lost.** On a reset the provider
+MUST stop every component of every attached holder by that component's own
+process handle, release its lease once the stop is confirmed, and report
+the engine with `engine:gpu-reset`. A component whose stop or release
+cannot be confirmed keeps its lease record, as an unload does. A load still
+waiting for readiness is stopped too.
+
+**[RES-G3] The running request fails and is quarantined.** The request that
+was running when its engine was lost in a reset MUST fail with `gpu:reset`.
+Its fingerprint (the model, the engine, and the request's shape: size,
+length and dispatch settings, never its prompt or seed) MUST be quarantined:
+an identical request is refused `gpu:quarantined` for 10 minutes after the
+first strike, doubled after each further strike up to 24 hours, and held
+until a person clears it after the third. The quarantine MUST outlive a
+provider restart. Only the owner or the user clears it; the provider never
+retries the identical request on its own. A quarantine file that cannot be
+read as this version's (not JSON, another version, an entry whose key is not
+its fingerprint's) MUST be moved aside beside itself as
+`<file>.bad-<UTC time>`, reported in one log record, and the provider starts
+with an empty quarantine; listing the quarantine names the moved file, and
+clearing every entry of a damaged file moves it aside.
+
+**[RES-G4] Reload after the driver is back.** After a reset no load MUST
+start until the settle (10 s after the last reset record) has passed and the
+probe finds the adapter again (`instrument.GraphicsAdapters`: the GPU adapter
+counters list it). The engine's own readiness on that load is the probe's
+second half. A load refused meanwhile reads `gpu:resetting`. A load is asked
+twice, before its lease and again after the grant and before its engine
+starts, so a reset or a standby entry that began during the lease wait
+refuses the start and the grant goes back unused.
+
+**[RES-G5] Prevent.** While the machine is in or entering Modern Standby
+no new GPU load or GPU job MUST start; a load reads `gpu:standby`, and a
+queued job waits. While a GPU job runs the provider MUST hold the wake
+lease (RES-A1), one for all its concurrent jobs. Each engine kind carries a
+dispatch row as data (`gpufault.DispatchFor`, which hands out copies): the
+environment it runs with,
+the arguments it always carries, and the request-shape values recorded as
+hanging the GPU, which are refused `gpu:known-bad`. A row changes by adding
+evidence to it.
+
+| Engine kind | Row | Evidence |
+| --- | --- | --- |
+| `sdcpp` | `--diffusion-fa` always | FastWan 1280x704x121 without flash attention reached 87 GB of commit; with it, 32.8 GB (`research/live-runs/2026-10-01.md` run 3b, 3d) |
+| `pytorch-rocm` | `MIOPEN_FIND_MODE=FAST`, `MIOPEN_DEBUG_CONV_DIRECT=0`, the naive solvers off (`MIOPEN_DEBUG_CONV_DIRECT_NAIVE_CONV_FWD`, `_BWD`, `_WRW` `=0`), the Winograd Fury solvers off, `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`; MIOpen convolution off and `seq_len` from the clip as engine fixes; `math-attention-tokens` from 27280 refused | MIOpen's live solver search in standby (run b) and Hummingbird-XT padded to 27280 tokens on the SDPA math fallback (run c) each ended in a TDR; runs b', c' and c'' with these settings passed (`research/live-runs/2026-10-01-rocm.md`); the naive solvers, timed at up to 6,667 ms per dispatch in run b's search, are off as the stack review's condition 4 asks (`research/security-reviews/pytorch-rocm-windows-2.11.0-rocm7.13.0.md`) |
+
+**[RES-G6] Report.** Each fault MUST be one log record through OA logging
+(`gpu fault`: time, source record, engines stopped, engines whose lease
+stayed, fingerprints quarantined) and carry one Panel line of one sentence
+naming the engines stopped and whether the running request is paused. A
+fault with no engine and no request has no Panel line.
+
+**[RES-G7] The TDR delay is the owner's.** The Windows TDR settings
+(`TdrDelay`, `TdrDdiDelay`, `TdrLevel` under
+`HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers`) are a system
+setting owned by the machine's owner, and OA MUST NOT read them as
+permission or change them. Raising `TdrDelay` lets a long dispatch finish
+instead of resetting the adapter, at three costs: a hung GPU freezes the
+display for the whole delay before Windows recovers it, a delay set too
+high turns a recoverable hang into a system that needs a hard reset, and
+the change needs an administrator and a restart and applies to every
+program on the machine. OA prevents long dispatches through the rows of
+RES-G5 and recovers through RES-G2..G4, whatever the delay.
+
+| Word | Where | Meaning |
+| --- | --- | --- |
+| `gpu:reset` | the failed request | Its engine was lost in a driver reset (RES-G3) |
+| `engine:gpu-reset` | the stopped engine | Why the holder stopped it (RES-G2) |
+| `gpu:resetting` | a refused load | The driver reset moments ago or the adapter is not listed again (RES-G4) |
+| `gpu:standby` | a refused load | The machine is in Modern Standby (RES-G5) |
+| `gpu:quarantined` | a refused request | An identical request reset the driver (RES-G3) |
+| `gpu:known-bad` | a refused request | Its shape reaches a value recorded as hanging the GPU (RES-G5) |
 
 ## Outcomes
 
@@ -315,7 +552,11 @@ deadline, which the service raises to `MaxAcquireWait` (120 s) plus a
 ten-second margin whenever the lease book is served; `wait_ms` on `Observe`
 is 0..30000. A lease not renewed within its lifetime (30 s by default) ends;
 an attached holder's yield is confirmed within the settle bound (16 s by
-default) before it reads `unanswered`.
+default) before it reads `unanswered`. GPU faults: a reset record settles
+for 10 s before a probe; an engine exit within 30 s of a reset record is the
+reset's, a provider waits 10 s after an exit for that record, and a fault's
+record gathers for 30 s; a quarantine lasts 10
+minutes, doubles per strike up to 24 hours, and holds after three strikes.
 
 ## Divergences
 
@@ -337,3 +578,11 @@ this service's job: which models exist and which server serves them is
 answer rather than measuring anything itself. A second, more exact
 instrument for confirming a yield smaller than the counter's own floor
 (RES-T2, [Divergences](#divergences)) does not exist.
+
+GPU faults (RES-G1..G7) have one consumer today, the model host. Engines a
+Lemonade server manages and the PyTorch provider (TheNoise) do not yet
+attach a Guard. A reset is applied to every holder the Guard has: the
+records name no adapter, and attribution to one adapter on a machine with
+two GPUs is not built. Linux and macOS have no record source; there the
+Guard acts on engines' device-lost lines alone. The Panel line is carried
+in the fault's log record; a Panel page that reads it is not built.

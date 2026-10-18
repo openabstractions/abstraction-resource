@@ -1,0 +1,87 @@
+{
+  "format": "openabstractions-rights@1",
+  "owner": "abstraction.resource",
+  "generated": "Do not edit. Run rights-catalogue --write from the existing compiled catalogue.",
+  "source": "github.com/openabstractions/abstraction-facade/go/grants",
+  "availability": "Compiled catalogue reference: served and selector support use the named receiving-service context. Connected-runtime discovery supplies current availability. Facade Applications is experimental. Definitions grant no access.",
+  "compiled_receivers": {
+    "credentials": true,
+    "application_logs": true
+  },
+  "definitions": [
+    {
+      "definition": {
+        "action": "abstraction.resource/hold",
+        "owner_contract": "abstraction.resource/leases@1",
+        "operations": [
+          "abstraction.resource/leases@1#Acquire",
+          "abstraction.resource/leases@1#AcquireFree"
+        ],
+        "resource_profile": "abstraction.rights/legacy-exact-string@1",
+        "resource_type": "string (legacy exact resource)",
+        "enforced_by": [
+          "abstraction.resource/leases@1"
+        ],
+        "disclosure": "Reserve lease; may ask holders to yield; wake inhibitor subject to platform.",
+        "lifecycle": "One scarce resource; attached-holder yield separately service-authorized.",
+        "first_use": "none",
+        "served": true
+      },
+      "label": "abstraction.resource/hold",
+      "supported_selectors": [],
+      "first_use_selectors": [],
+      "collection": "One scarce resource; attached-holder yield separately service-authorized.",
+      "all_effect": "",
+      "request_type": "string (legacy exact resource)"
+    },
+    {
+      "definition": {
+        "action": "abstraction.resource/table.read",
+        "owner_contract": "abstraction.resource/table@1",
+        "operations": [
+          "abstraction.resource/table@1#Holders"
+        ],
+        "resource_profile": "abstraction.rights/legacy-exact-string@1",
+        "resource_type": "string (legacy exact resource)",
+        "enforced_by": [
+          "abstraction.resource/table@1"
+        ],
+        "disclosure": "Read other programs' holder rows under the account-scoped table right.",
+        "lifecycle": "One receiving account. Public capacities and own holder rows remain available without this right.",
+        "first_use": "none",
+        "served": true
+      },
+      "label": "abstraction.resource/table.read",
+      "supported_selectors": [],
+      "first_use_selectors": [],
+      "collection": "One receiving account. Public capacities and own holder rows remain available without this right.",
+      "all_effect": "",
+      "request_type": "string (legacy exact resource)"
+    },
+    {
+      "definition": {
+        "action": "abstraction.resource/yield",
+        "owner_contract": "abstraction.resource/leases@1",
+        "operations": [
+          "abstraction.resource/leases@1#Acquire"
+        ],
+        "resource_profile": "abstraction.rights/legacy-exact-string@1",
+        "resource_type": "string (legacy exact resource)",
+        "enforced_by": [
+          "abstraction.resource/leases@1"
+        ],
+        "disclosure": "Request attached model holders to unload under the runtime own program host-specific yield decision.",
+        "lifecycle": "One attached host:\u003cname\u003e; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
+        "first_use": "none",
+        "served": true
+      },
+      "label": "abstraction.resource/yield",
+      "supported_selectors": [],
+      "first_use_selectors": [],
+      "collection": "One attached host:\u003cname\u003e; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
+      "all_effect": "",
+      "request_type": "string (legacy exact resource)"
+    }
+  ],
+  "bundles": []
+}

@@ -1,8 +1,19 @@
 # abstraction-resource
 
-Who holds the card. One table of every hold of a scarce resource on this
-machine, with the program that holds it, the account it runs as, how much, and
-whether an instrument measured that amount or its holder claimed it.
+*For applications and operators that need to know who holds memory, and model
+servers that take or yield it. Example code is in [Read it](#read-it).*
+
+Who holds graphics-card memory (a card, `card:0` is the first) and system
+memory on this machine, with leases that reserve an amount and a wake lease
+that keeps the machine awake for its holder.
+
+**What's new here:** Programs sharing one graphics card see each other: one
+table says who holds how much, measured where the system can measure it, and a
+lease asks the holders OA can reach (OA lease holders and the engines OA can
+unload) to give memory back before a request is refused.
+
+One table of every hold of a scarce resource on this machine, with the program
+that holds it, the account it runs as, how much, and whether an instrument measured that amount or its holder claimed it.
 
     card:0  held 20.95 GiB  instrument windows-gpu-counters
     verified  …\llama.cpp-win-x86_64-vulkan-avx2-2.40.0\llama-server.exe  17.29 GiB
@@ -15,12 +26,6 @@ empty while another process holds 22 GB of it. Three instruments gave three
 answers at one instant and two were wrong by tens of gigabytes
 (`research/resources/MEASUREMENT-2026-09-22.md`). The table is the one place
 that answers the whole device.
-
-**Not yet tagged.** The public `abstraction-resource` repository exists, but
-has no release tag as of 2026-09-26. Its planned first tag is `go/v0.1.0`,
-after the published `identity` and `rights` modules this layer depends on
-(`research/release-0.3.0/PLAN.md`). The contracts began as drafts of
-2026-09-22 and remain subject to review before that first tag.
 
 ## What it is
 
@@ -188,3 +193,26 @@ func main() {
 Bindings for Go, Python, C++, Rust and JavaScript are generated from
 [resource.thrift](resource.thrift) by `scripts/generate.sh`; the schema page is
 [abstraction.resource.schema.html](abstraction.resource.schema.html).
+
+## Status
+
+**Published.** The public `abstraction-resource` repository carries the tags
+`go/v0.1.0` and `go/v0.1.1`, and
+`go get github.com/openabstractions/abstraction-resource/go@v0.1.1` fetches the
+latest. The contracts began as drafts of 2026-09-22.
+
+<!-- BEGIN GENERATED PERMISSION DEFINITIONS -->
+
+## Permission definitions
+
+Generated from the existing compiled catalogue. [RIGHTS.json](RIGHTS.json) contains the complete action/profile records, disclosure, lifecycle, first-use behavior, selector support and finite bundles.
+
+This reference records compiled receiving support; RIGHTS.json names the compilation context. A connected runtime advertises current availability and selector support. These definitions supply no grant.
+
+| Action | Resource profile | Owning operations | First-use targets | Compiled receiver |
+|---|---|---|---|---|
+| `abstraction.resource/hold` | `abstraction.rights/legacy-exact-string@1` | `abstraction.resource/leases@1#Acquire`, `abstraction.resource/leases@1#AcquireFree` | `none` | served in compiled context |
+| `abstraction.resource/table.read` | `abstraction.rights/legacy-exact-string@1` | `abstraction.resource/table@1#Holders` | `none` | served in compiled context |
+| `abstraction.resource/yield` | `abstraction.rights/legacy-exact-string@1` | `abstraction.resource/leases@1#Acquire` | `none` | served in compiled context |
+
+<!-- END GENERATED PERMISSION DEFINITIONS -->

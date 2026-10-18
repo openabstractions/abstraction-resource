@@ -3,6 +3,8 @@
 """abstraction.resource: generated contract types, vocabularies and service clients."""
 
 from ._codec import (
+    AcquireFreeOutcome,
+    AcquireFreeResult,
     AcquireOutcome,
     AcquireResult,
     AnswerCallResult,
@@ -40,6 +42,8 @@ from ._codec import (
 )
 
 __all__ = [
+    "AcquireFreeOutcome",
+    "AcquireFreeResult",
     "AcquireOutcome",
     "AcquireResult",
     "AnswerCallResult",

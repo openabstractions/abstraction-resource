@@ -146,7 +146,8 @@ func (h *Host) Serve(ctx context.Context) error {
 	defer stop()
 	// A lease nobody renews ends (CONTRACT.md RES-L4). The host is what
 	// notices: the book is asked on a clock so an ended lease stops standing
-	// between the next asker and the bytes even while nobody calls.
+	// between the next asker and the bytes even while nobody calls. The same
+	// clock ends a lease whose grant was revoked or expired (RES-L7).
 	if book != nil {
 		h.workers.Add(1)
 		go func() {
@@ -159,6 +160,7 @@ func (h *Host) Serve(ctx context.Context) error {
 					return
 				case <-ticker.C:
 					book.Expire()
+					book.Recheck(h.ctx)
 				}
 			}
 		}()

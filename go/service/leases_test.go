@@ -72,6 +72,327 @@ func (h *holder) times() int {
 	return h.asked
 }
 
+// waiterYield is one controlled attempt to yield. Each waiter gets its own
+// release signal so cancelling one Acquire cannot release or cancel another.
+type waiterYield struct {
+	ctx     context.Context
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func (y *waiterYield) continueYield() { y.once.Do(func() { close(y.proceed) }) }
+
+// gatedHolder lets these tests stop a yield before it has an effect. Its
+// first released call acknowledges without freeing memory; a later call frees
+// the measured bytes, allowing a surviving waiter to complete.
+type gatedHolder struct {
+	in       *fake
+	resource string
+	frees    int64
+	calls    chan *waiterYield
+
+	mu    sync.Mutex
+	count int
+}
+
+func (h *gatedHolder) Holder() string   { return "host:gated" }
+func (h *gatedHolder) Resource() string { return h.resource }
+func (h *gatedHolder) Holding(context.Context) ([]string, error) {
+	return []string{"resident"}, nil
+}
+func (h *gatedHolder) Yield(ctx context.Context) error {
+	h.mu.Lock()
+	h.count++
+	callNumber := h.count
+	h.mu.Unlock()
+	y := &waiterYield{ctx: ctx, proceed: make(chan struct{})}
+	select {
+	case h.calls <- y:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-y.proceed:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if callNumber > 1 {
+		h.in.mu.Lock()
+		for i := range h.in.samples {
+			if h.in.samples[i].Amount >= h.frees {
+				h.in.samples[i].Amount -= h.frees
+				break
+			}
+		}
+		h.in.at = time.Now()
+		h.in.mu.Unlock()
+	}
+	return nil
+}
+
+// signalledInstrument exposes each fresh measurement to a test without
+// changing its value or the service's timing.
+type signalledInstrument struct {
+	in    *fake
+	reads chan struct{}
+}
+
+func (i *signalledInstrument) Name() string                 { return i.in.Name() }
+func (i *signalledInstrument) Resources() []string          { return i.in.Resources() }
+func (i *signalledInstrument) VerifiedProcessSamples() bool { return i.in.VerifiedProcessSamples() }
+func (i *signalledInstrument) Read(resource string) (instrument.Reading, error) {
+	r, err := i.in.Read(resource)
+	select {
+	case i.reads <- struct{}{}:
+	default:
+	}
+	return r, err
+}
+
+func waiterBook(t *testing.T, in *fake, attached Attached, reads chan struct{}) *Book {
+	t.Helper()
+	book, err := OpenBook(BookOptions{
+		Table:    NewTable(&signalledInstrument{in: in, reads: reads}, nil, time.Nanosecond),
+		Attached: []Attached{attached}, Settle: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return book
+}
+
+func receiveWaiterYield(t *testing.T, calls <-chan *waiterYield) *waiterYield {
+	t.Helper()
+	select {
+	case y := <-calls:
+		return y
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not receive the yield request")
+		return nil
+	}
+}
+
+func receiveAcquire(t *testing.T, results <-chan wire.AcquireResult) wire.AcquireResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(5 * time.Second):
+		t.Fatal("Acquire did not return after cancellation or release")
+		return wire.AcquireResult{}
+	}
+}
+
+func receiveMeasurement(t *testing.T, reads <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-reads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("instrument was not read while settling the yield")
+	}
+}
+
+func drainMeasurements(reads <-chan struct{}) {
+	for {
+		select {
+		case <-reads:
+		default:
+			return
+		}
+	}
+}
+
+// Cancelling an Acquire blocked inside an attached yield ends only that
+// waiter. A second waiter retains its own yield context and can use the bytes
+// when the holder later frees them.
+func TestAcquireCancellationDuringAttachedYieldLeavesOtherWaiterAlone(t *testing.T) {
+	in := card(100*gib, 90*gib)
+	reads := make(chan struct{}, 128)
+	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
+	book := waiterBook(t, in, holder, reads)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstResult := make(chan wire.AcquireResult, 1)
+	go func() { firstResult <- book.Acquire(firstCtx, asker(), nil, instrument.Card0, 60*gib, 5000) }()
+	firstYield := receiveWaiterYield(t, holder.calls)
+	defer firstYield.continueYield()
+
+	secondResult := make(chan wire.AcquireResult, 1)
+	go func() {
+		secondResult <- book.Acquire(context.Background(), askerNamed("second"), nil, instrument.Card0, 60*gib, 5000)
+	}()
+	secondYield := receiveWaiterYield(t, holder.calls)
+	defer secondYield.continueYield()
+
+	cancelFirst()
+	if got := receiveAcquire(t, firstResult); got.Outcome == wire.AcquireOutcomeAcquired {
+		t.Fatalf("cancelled waiter acquired a lease: %+v", got)
+	}
+	if len(book.Leases()) != 0 {
+		t.Fatalf("cancelled waiter left a lease behind: %+v", book.Leases())
+	}
+	if err := secondYield.ctx.Err(); err != nil {
+		t.Fatalf("cancelling the first waiter cancelled the second holder request: %v", err)
+	}
+	secondYield.continueYield()
+	if got := receiveAcquire(t, secondResult); got.Outcome != wire.AcquireOutcomeAcquired || got.Lease == nil {
+		t.Fatalf("second waiter did not acquire after its own yield: %+v", got)
+	}
+}
+
+// Cancelling after the holder acknowledged but before the instrument reports
+// freed bytes stops only that asker's settling wait. A separate waiter can
+// continue its own yield and acquire after the holder frees memory.
+func TestAcquireCancellationDuringAttachedYieldSettlingLeavesOtherWaiterAlone(t *testing.T) {
+	in := card(100*gib, 90*gib)
+	reads := make(chan struct{}, 128)
+	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
+	book := waiterBook(t, in, holder, reads)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstResult := make(chan wire.AcquireResult, 1)
+	go func() { firstResult <- book.Acquire(firstCtx, asker(), nil, instrument.Card0, 60*gib, 5000) }()
+	firstYield := receiveWaiterYield(t, holder.calls)
+	defer firstYield.continueYield()
+	drainMeasurements(reads)
+	firstYield.continueYield()
+	receiveMeasurement(t, reads)
+
+	secondResult := make(chan wire.AcquireResult, 1)
+	go func() {
+		secondResult <- book.Acquire(context.Background(), askerNamed("second"), nil, instrument.Card0, 60*gib, 5000)
+	}()
+	secondYield := receiveWaiterYield(t, holder.calls)
+	defer secondYield.continueYield()
+
+	cancelFirst()
+	if got := receiveAcquire(t, firstResult); got.Outcome == wire.AcquireOutcomeAcquired {
+		t.Fatalf("cancelled waiter acquired before the instrument showed freed bytes: %+v", got)
+	}
+	if len(book.Leases()) != 0 {
+		t.Fatalf("cancelled waiter left a lease behind: %+v", book.Leases())
+	}
+	if err := secondYield.ctx.Err(); err != nil {
+		t.Fatalf("cancelling the settling waiter cancelled the second holder request: %v", err)
+	}
+	secondYield.continueYield()
+	if got := receiveAcquire(t, secondResult); got.Outcome != wire.AcquireOutcomeAcquired || got.Lease == nil {
+		t.Fatalf("second waiter did not acquire after the instrument confirmed release: %+v", got)
+	}
+}
+
+// Caller disconnect reaches a pending Acquire through FramedCall.WaitContext.
+// Cancelling one actual framed call must stop only its holder yield; a sibling
+// call can still yield the bytes and acquire them.
+func TestFramedAcquireCancellationStopsOnlyItsOwnYield(t *testing.T) {
+	in := card(100*gib, 90*gib)
+	reads := make(chan struct{}, 128)
+	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
+	book := waiterBook(t, in, holder, reads)
+	client := servedWithLeases(t, book.table, book)
+
+	type acquireCall struct {
+		result wire.AcquireResult
+		err    error
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstResult := make(chan acquireCall, 1)
+	go func() {
+		result, err := client.AcquireContext(firstCtx, instrument.Card0, 60*gib, 30000*time.Millisecond)
+		firstResult <- acquireCall{result: result, err: err}
+	}()
+	firstYield := receiveWaiterYield(t, holder.calls)
+	defer firstYield.continueYield()
+
+	secondResult := make(chan acquireCall, 1)
+	go func() {
+		result, err := client.AcquireContext(context.Background(), instrument.Card0, 60*gib, 30000*time.Millisecond)
+		secondResult <- acquireCall{result: result, err: err}
+	}()
+	secondYield := receiveWaiterYield(t, holder.calls)
+	defer secondYield.continueYield()
+
+	cancelFirst()
+	select {
+	case <-firstYield.ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("closing the caller's framed call did not cancel its attached yield")
+	}
+	select {
+	case got := <-firstResult:
+		if got.err == nil {
+			t.Fatalf("cancelled caller received a result: %+v", got.result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled framed Acquire did not return")
+	}
+	if leases := book.Leases(); len(leases) != 0 {
+		t.Fatalf("cancelled framed caller retained a lease: %+v", leases)
+	}
+	if err := secondYield.ctx.Err(); err != nil {
+		t.Fatalf("cancelling the first call cancelled the sibling yield: %v", err)
+	}
+	secondYield.continueYield()
+	select {
+	case got := <-secondResult:
+		if got.err != nil || got.result.Outcome != wire.AcquireOutcomeAcquired || got.result.Lease == nil {
+			t.Fatalf("sibling call did not acquire after its own yield: %+v, %v", got.result, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sibling framed Acquire did not finish")
+	}
+}
+
+// Cancellation arriving after the instrument snapshot but before the grant
+// mutex is acquired must be checked at the commit fence, not only at the start
+// of Acquire.
+func TestAcquireChecksCancellationAtGrantCommitFence(t *testing.T) {
+	in := card(100*gib, 0)
+	gate := &grantGateInstrument{in: in, entered: make(chan struct{}), proceed: make(chan struct{})}
+	book, err := OpenBook(BookOptions{Table: NewTable(gate, nil, time.Nanosecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan wire.AcquireResult, 1)
+	go func() { result <- book.Acquire(ctx, asker(), nil, instrument.Card0, 10*gib, 0) }()
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Acquire did not reach the controlled instrument read")
+	}
+	cancel()
+	close(gate.proceed)
+	select {
+	case got := <-result:
+		if got.Outcome == wire.AcquireOutcomeAcquired || len(book.Leases()) != 0 {
+			t.Fatalf("cancellation at the grant fence left a lease: result=%+v leases=%+v", got, book.Leases())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Acquire did not return after its grant fence was released")
+	}
+}
+
+type grantGateInstrument struct {
+	in      *fake
+	entered chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func (g *grantGateInstrument) Name() string                 { return g.in.Name() }
+func (g *grantGateInstrument) Resources() []string          { return g.in.Resources() }
+func (g *grantGateInstrument) VerifiedProcessSamples() bool { return g.in.VerifiedProcessSamples() }
+func (g *grantGateInstrument) Read(resource string) (instrument.Reading, error) {
+	g.once.Do(func() {
+		close(g.entered)
+		<-g.proceed
+	})
+	return g.in.Read(resource)
+}
+
 // The card of the measurement: a pool of 120 GiB, one process holding 20.
 func cardBook(t *testing.T, in *fake, options BookOptions) *Book {
 	t.Helper()

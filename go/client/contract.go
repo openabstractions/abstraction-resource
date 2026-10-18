@@ -41,6 +41,26 @@ func ParseProcessBindOutcome(word string) (ProcessBindOutcome, bool) {
 
 type AcquireResult = wire.AcquireResult
 
+type AcquireFreeResult = wire.AcquireFreeResult
+
+type AcquireFreeOutcome = wire.AcquireFreeOutcome
+
+const (
+	AcquireFreeOutcomeAcquired     = wire.AcquireFreeOutcomeAcquired
+	AcquireFreeOutcomeInsufficient = wire.AcquireFreeOutcomeInsufficient
+	AcquireFreeOutcomeNotPermitted = wire.AcquireFreeOutcomeNotPermitted
+	AcquireFreeOutcomeUnavailable  = wire.AcquireFreeOutcomeUnavailable
+	AcquireFreeOutcomeInvalid      = wire.AcquireFreeOutcomeInvalid
+	AcquireFreeOutcomeForbidden    = wire.AcquireFreeOutcomeForbidden
+	AcquireFreeOutcomeHeld         = wire.AcquireFreeOutcomeHeld
+)
+
+func AcquireFreeOutcomeValues() []AcquireFreeOutcome { return wire.AcquireFreeOutcomeValues() }
+
+func ParseAcquireFreeOutcome(word string) (AcquireFreeOutcome, bool) {
+	return wire.ParseAcquireFreeOutcome(word)
+}
+
 type YieldRecord = wire.YieldRecord
 
 type YieldRequest = wire.YieldRequest

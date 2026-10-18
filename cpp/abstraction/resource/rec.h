@@ -136,6 +136,50 @@ inline constexpr bool operator!=(std::string_view name, AcquireOutcome value) { 
 
 inline const std::vector<std::string> kAcquireOutcomeNames = {"acquired", "insufficient", "holders_refused", "not_permitted", "unavailable", "invalid", "forbidden"};
 
+enum class AcquireFreeOutcome : std::int32_t {
+    Acquired = 1,
+    Insufficient = 2,
+    NotPermitted = 3,
+    Unavailable = 4,
+    Invalid = 5,
+    Forbidden = 6,
+    Held = 7,
+};
+
+// The member's name on the wire; empty for a value that names no member.
+inline constexpr std::string_view wire_name(AcquireFreeOutcome value) {
+    switch (value) {
+        case AcquireFreeOutcome::Acquired: return "acquired";
+        case AcquireFreeOutcome::Insufficient: return "insufficient";
+        case AcquireFreeOutcome::NotPermitted: return "not_permitted";
+        case AcquireFreeOutcome::Unavailable: return "unavailable";
+        case AcquireFreeOutcome::Invalid: return "invalid";
+        case AcquireFreeOutcome::Forbidden: return "forbidden";
+        case AcquireFreeOutcome::Held: return "held";
+    }
+    return {};
+}
+
+// The member a wire name spells; empty for a name this vocabulary refuses.
+inline std::optional<AcquireFreeOutcome> parse_acquire_free_outcome(std::string_view name) {
+    if (name == "acquired") return AcquireFreeOutcome::Acquired;
+    if (name == "insufficient") return AcquireFreeOutcome::Insufficient;
+    if (name == "not_permitted") return AcquireFreeOutcome::NotPermitted;
+    if (name == "unavailable") return AcquireFreeOutcome::Unavailable;
+    if (name == "invalid") return AcquireFreeOutcome::Invalid;
+    if (name == "forbidden") return AcquireFreeOutcome::Forbidden;
+    if (name == "held") return AcquireFreeOutcome::Held;
+    return std::nullopt;
+}
+
+// A member equals its wire name, so code holding the contract's word compares directly.
+inline constexpr bool operator==(AcquireFreeOutcome value, std::string_view name) { return wire_name(value) == name; }
+inline constexpr bool operator!=(AcquireFreeOutcome value, std::string_view name) { return wire_name(value) != name; }
+inline constexpr bool operator==(std::string_view name, AcquireFreeOutcome value) { return wire_name(value) == name; }
+inline constexpr bool operator!=(std::string_view name, AcquireFreeOutcome value) { return wire_name(value) != name; }
+
+inline const std::vector<std::string> kAcquireFreeOutcomeNames = {"acquired", "insufficient", "not_permitted", "unavailable", "invalid", "forbidden", "held"};
+
 enum class YieldAnswer : std::int32_t {
     Yielded = 1,
     Refused = 2,
@@ -294,6 +338,15 @@ struct YieldRecord {
 // asked to yield for this request, in order, whatever the outcome.
 struct AcquireResult {
     AcquireOutcome outcome{};
+    std::optional<Lease> lease;
+    std::vector<YieldRecord> asked;
+};
+
+// lease is present exactly for acquired. asked is always empty: AcquireFree
+// asks nobody to yield. Its outcomes belong to this new method; Acquire retains
+// its published closed vocabulary.
+struct AcquireFreeResult {
+    AcquireFreeOutcome outcome{};
     std::optional<Lease> lease;
     std::vector<YieldRecord> asked;
 };
@@ -504,6 +557,11 @@ struct OALeasesAcquireArguments {
     std::int64_t wait_ms = 0;
 };
 
+struct OALeasesAcquireFreeArguments {
+    std::string resource;
+    std::int64_t amount = 0;
+};
+
 struct OALeasesRenewArguments {
     std::string lease;
 };
@@ -560,6 +618,10 @@ struct OALeasesAcquireResult {
     AcquireResult value;
 };
 
+struct OALeasesAcquireFreeResult {
+    AcquireFreeResult value;
+};
+
 struct OALeasesRenewResult {
     LeaseChangeResult value;
 };
@@ -587,6 +649,7 @@ inline void enc_resources_result(std::string&, const ResourcesResult&, int);
 inline void enc_lease(std::string&, const Lease&, int);
 inline void enc_yield_record(std::string&, const YieldRecord&, int);
 inline void enc_acquire_result(std::string&, const AcquireResult&, int);
+inline void enc_acquire_free_result(std::string&, const AcquireFreeResult&, int);
 inline void enc_yield_request(std::string&, const YieldRequest&, int);
 inline void enc_yield_page(std::string&, const YieldPage&, int);
 inline void enc_observe_result(std::string&, const ObserveResult&, int);
@@ -598,6 +661,7 @@ inline void enc_process_bind_result(std::string&, const ProcessBindResult&, int)
 inline void enc_oa_table_resources_arguments(std::string&, const OATableResourcesArguments&, int);
 inline void enc_oa_table_holders_arguments(std::string&, const OATableHoldersArguments&, int);
 inline void enc_oa_leases_acquire_arguments(std::string&, const OALeasesAcquireArguments&, int);
+inline void enc_oa_leases_acquire_free_arguments(std::string&, const OALeasesAcquireFreeArguments&, int);
 inline void enc_oa_leases_renew_arguments(std::string&, const OALeasesRenewArguments&, int);
 inline void enc_oa_leases_release_arguments(std::string&, const OALeasesReleaseArguments&, int);
 inline void enc_oa_leases_observe_arguments(std::string&, const OALeasesObserveArguments&, int);
@@ -609,6 +673,7 @@ inline void enc_oa_service_error(std::string&, const OAServiceError&, int);
 inline void enc_oa_table_resources_result(std::string&, const OATableResourcesResult&, int);
 inline void enc_oa_table_holders_result(std::string&, const OATableHoldersResult&, int);
 inline void enc_oa_leases_acquire_result(std::string&, const OALeasesAcquireResult&, int);
+inline void enc_oa_leases_acquire_free_result(std::string&, const OALeasesAcquireFreeResult&, int);
 inline void enc_oa_leases_renew_result(std::string&, const OALeasesRenewResult&, int);
 inline void enc_oa_leases_release_result(std::string&, const OALeasesReleaseResult&, int);
 inline void enc_oa_leases_observe_result(std::string&, const OALeasesObserveResult&, int);
@@ -873,6 +938,33 @@ inline void enc_acquire_result(std::string& out, const AcquireResult& v, int dep
     out += '}';
 }
 
+inline void enc_acquire_free_result(std::string& out, const AcquireFreeResult& v, int depth) {
+    if (wire_name(v.outcome).empty()) throw Refusal("bad_enum", 0);
+    out += '{';
+    out += '\n';
+    pad(out, depth + 1);
+    esc(out, "outcome");
+    out += ": ";
+    esc(out, std::string(wire_name(v.outcome)));
+    if (v.lease.has_value()) {
+        out += ',';
+        out += '\n';
+        pad(out, depth + 1);
+        esc(out, "lease");
+        out += ": ";
+        enc_lease(out, *v.lease, depth + 1);
+    }
+    out += ',';
+    out += '\n';
+    pad(out, depth + 1);
+    esc(out, "asked");
+    out += ": ";
+    enc_list<YieldRecord>(out, v.asked, depth + 1, enc_yield_record);
+    out += '\n';
+    pad(out, depth);
+    out += '}';
+}
+
 inline void enc_yield_request(std::string& out, const YieldRequest& v, int depth) {
     out += '{';
     out += '\n';
@@ -1042,6 +1134,8 @@ inline void enc_process_bind_result(std::string& out, const ProcessBindResult& v
 }
 
 inline void enc_oa_table_resources_arguments(std::string& out, const OATableResourcesArguments& v, int depth) {
+    (void)v;
+    (void)depth;
     out += '{';
     out += '}';
 }
@@ -1083,6 +1177,24 @@ inline void enc_oa_leases_acquire_arguments(std::string& out, const OALeasesAcqu
     esc(out, "wait_ms");
     out += ": ";
     num(out, v.wait_ms);
+    out += '\n';
+    pad(out, depth);
+    out += '}';
+}
+
+inline void enc_oa_leases_acquire_free_arguments(std::string& out, const OALeasesAcquireFreeArguments& v, int depth) {
+    out += '{';
+    out += '\n';
+    pad(out, depth + 1);
+    esc(out, "resource");
+    out += ": ";
+    esc(out, v.resource);
+    out += ',';
+    out += '\n';
+    pad(out, depth + 1);
+    esc(out, "amount");
+    out += ": ";
+    num(out, v.amount);
     out += '\n';
     pad(out, depth);
     out += '}';
@@ -1288,6 +1400,18 @@ inline void enc_oa_leases_acquire_result(std::string& out, const OALeasesAcquire
     esc(out, "value");
     out += ": ";
     enc_acquire_result(out, v.value, depth + 1);
+    out += '\n';
+    pad(out, depth);
+    out += '}';
+}
+
+inline void enc_oa_leases_acquire_free_result(std::string& out, const OALeasesAcquireFreeResult& v, int depth) {
+    out += '{';
+    out += '\n';
+    pad(out, depth + 1);
+    esc(out, "value");
+    out += ": ";
+    enc_acquire_free_result(out, v.value, depth + 1);
     out += '\n';
     pad(out, depth);
     out += '}';
@@ -1762,6 +1886,7 @@ inline ResourcesResult decode_resources_result(Reader& r);
 inline Lease decode_lease(Reader& r);
 inline YieldRecord decode_yield_record(Reader& r);
 inline AcquireResult decode_acquire_result(Reader& r);
+inline AcquireFreeResult decode_acquire_free_result(Reader& r);
 inline YieldRequest decode_yield_request(Reader& r);
 inline YieldPage decode_yield_page(Reader& r);
 inline ObserveResult decode_observe_result(Reader& r);
@@ -1773,6 +1898,7 @@ inline ProcessBindResult decode_process_bind_result(Reader& r);
 inline OATableResourcesArguments decode_oa_table_resources_arguments(Reader& r);
 inline OATableHoldersArguments decode_oa_table_holders_arguments(Reader& r);
 inline OALeasesAcquireArguments decode_oa_leases_acquire_arguments(Reader& r);
+inline OALeasesAcquireFreeArguments decode_oa_leases_acquire_free_arguments(Reader& r);
 inline OALeasesRenewArguments decode_oa_leases_renew_arguments(Reader& r);
 inline OALeasesReleaseArguments decode_oa_leases_release_arguments(Reader& r);
 inline OALeasesObserveArguments decode_oa_leases_observe_arguments(Reader& r);
@@ -1784,6 +1910,7 @@ inline OAServiceError decode_oa_service_error(Reader& r);
 inline OATableResourcesResult decode_oa_table_resources_result(Reader& r);
 inline OATableHoldersResult decode_oa_table_holders_result(Reader& r);
 inline OALeasesAcquireResult decode_oa_leases_acquire_result(Reader& r);
+inline OALeasesAcquireFreeResult decode_oa_leases_acquire_free_result(Reader& r);
 inline OALeasesRenewResult decode_oa_leases_renew_result(Reader& r);
 inline OALeasesReleaseResult decode_oa_leases_release_result(Reader& r);
 inline OALeasesObserveResult decode_oa_leases_observe_result(Reader& r);
@@ -2190,6 +2317,55 @@ inline AcquireResult decode_acquire_result(Reader& r) {
     return v;
 }
 
+inline AcquireFreeResult decode_acquire_free_result(Reader& r) {
+    if (r.at() != '{') r.refuse("wrong_type");
+    r.enter();
+    ++r.pos;
+    AcquireFreeResult v;
+    std::optional<std::string> wire_outcome;
+    std::uint32_t seen = 0;
+    r.skip_ws();
+    if (r.at() != '}') {
+        for (;;) {
+            r.skip_ws();
+            if (r.at() != '"') r.refuse("malformed");
+            const std::string key = r.str();
+            r.skip_ws();
+            if (r.at() != ':') r.refuse("malformed");
+            ++r.pos;
+            r.skip_ws();
+            if (key == "outcome") {
+                if (seen & 1u) r.refuse("duplicate_field");
+                seen |= 1u;
+                wire_outcome = r.str();
+            } else if (key == "lease") {
+                if (seen & 2u) r.refuse("duplicate_field");
+                seen |= 2u;
+                v.lease = decode_lease(r);
+            } else if (key == "asked") {
+                if (seen & 4u) r.refuse("duplicate_field");
+                seen |= 4u;
+                v.asked = decode_list<YieldRecord>(r, decode_yield_record);
+            } else {
+                r.refuse("unknown_field");
+            }
+            r.skip_ws();
+            if (r.at() != ',') break;
+            ++r.pos;
+        }
+    }
+    if (r.at() != '}') r.refuse("malformed");
+    ++r.pos;
+    --r.depth;
+    if ((seen & 5u) != 5u) r.refuse("missing_field");
+    if (wire_outcome) {
+        const auto parsed = parse_acquire_free_outcome(*wire_outcome);
+        if (!parsed) r.refuse("bad_enum");
+        v.outcome = *parsed;
+    }
+    return v;
+}
+
 inline YieldRequest decode_yield_request(Reader& r) {
     if (r.at() != '{') r.refuse("wrong_type");
     r.enter();
@@ -2539,7 +2715,6 @@ inline OATableResourcesArguments decode_oa_table_resources_arguments(Reader& r) 
     r.enter();
     ++r.pos;
     OATableResourcesArguments v;
-    std::uint32_t seen = 0;
     r.skip_ws();
     if (r.at() != '}') {
         for (;;) {
@@ -2644,6 +2819,45 @@ inline OALeasesAcquireArguments decode_oa_leases_acquire_arguments(Reader& r) {
     ++r.pos;
     --r.depth;
     if ((seen & 7u) != 7u) r.refuse("missing_field");
+    return v;
+}
+
+inline OALeasesAcquireFreeArguments decode_oa_leases_acquire_free_arguments(Reader& r) {
+    if (r.at() != '{') r.refuse("wrong_type");
+    r.enter();
+    ++r.pos;
+    OALeasesAcquireFreeArguments v;
+    std::uint32_t seen = 0;
+    r.skip_ws();
+    if (r.at() != '}') {
+        for (;;) {
+            r.skip_ws();
+            if (r.at() != '"') r.refuse("malformed");
+            const std::string key = r.str();
+            r.skip_ws();
+            if (r.at() != ':') r.refuse("malformed");
+            ++r.pos;
+            r.skip_ws();
+            if (key == "resource") {
+                if (seen & 1u) r.refuse("duplicate_field");
+                seen |= 1u;
+                v.resource = r.str();
+            } else if (key == "amount") {
+                if (seen & 2u) r.refuse("duplicate_field");
+                seen |= 2u;
+                v.amount = r.integer(INT64_MIN, INT64_MAX);
+            } else {
+                r.refuse("unknown_field");
+            }
+            r.skip_ws();
+            if (r.at() != ',') break;
+            ++r.pos;
+        }
+    }
+    if (r.at() != '}') r.refuse("malformed");
+    ++r.pos;
+    --r.depth;
+    if ((seen & 3u) != 3u) r.refuse("missing_field");
     return v;
 }
 
@@ -3086,6 +3300,41 @@ inline OALeasesAcquireResult decode_oa_leases_acquire_result(Reader& r) {
     return v;
 }
 
+inline OALeasesAcquireFreeResult decode_oa_leases_acquire_free_result(Reader& r) {
+    if (r.at() != '{') r.refuse("wrong_type");
+    r.enter();
+    ++r.pos;
+    OALeasesAcquireFreeResult v;
+    std::uint32_t seen = 0;
+    r.skip_ws();
+    if (r.at() != '}') {
+        for (;;) {
+            r.skip_ws();
+            if (r.at() != '"') r.refuse("malformed");
+            const std::string key = r.str();
+            r.skip_ws();
+            if (r.at() != ':') r.refuse("malformed");
+            ++r.pos;
+            r.skip_ws();
+            if (key == "value") {
+                if (seen & 1u) r.refuse("duplicate_field");
+                seen |= 1u;
+                v.value = decode_acquire_free_result(r);
+            } else {
+                r.refuse("unknown_field");
+            }
+            r.skip_ws();
+            if (r.at() != ',') break;
+            ++r.pos;
+        }
+    }
+    if (r.at() != '}') r.refuse("malformed");
+    ++r.pos;
+    --r.depth;
+    if ((seen & 1u) != 1u) r.refuse("missing_field");
+    return v;
+}
+
 inline OALeasesRenewResult decode_oa_leases_renew_result(Reader& r) {
     if (r.at() != '{') r.refuse("wrong_type");
     r.enter();
@@ -3382,6 +3631,7 @@ throw ServiceError("unknown_method","");}catch(const ServiceError&e){return deta
 }
 private:
 Raw invoke_resources(const detail::OATableResourcesArguments&args){
+(void)args;
 ResourcesResult result{};
 try{
 result=handler.resources();
@@ -3409,6 +3659,7 @@ bool(*ready_hook_)(void*,std::string&)=nullptr;
 };
 struct Leases{virtual ~Leases()=default;
 virtual AcquireResult acquire(const std::string& resource,const std::int64_t& amount,const std::int64_t& wait_ms)=0;
+virtual AcquireFreeResult acquire_free(const std::string& resource,const std::int64_t& amount)=0;
 virtual LeaseChangeResult renew(const std::string& lease)=0;
 virtual LeaseChangeResult release(const std::string& lease)=0;
 virtual ObserveResult observe(const std::string& cursor,const std::int64_t& wait_ms)=0;
@@ -3422,6 +3673,13 @@ args.amount=amount;
 args.wait_ms=wait_ms;
 detail::OAServiceFrame v;v.version=1;v.service="abstraction.resource/leases@1";v.method="Acquire";detail::enc_oa_leases_acquire_arguments(v.arguments,args,1);std::string frame;detail::enc_oa_service_frame(frame,v,0);detail::service_payload(frame);
 auto response=transport_.exchange_frame(frame);auto payload=detail::service_response(response,v.service,v.method);detail::Reader r{payload};r.depth=1;r.skip_ws();auto result=detail::decode_oa_leases_acquire_result(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");
+return result.value;
+}
+AcquireFreeResult acquire_free(const std::string& resource,const std::int64_t& amount)override{detail::OALeasesAcquireFreeArguments args;
+args.resource=resource;
+args.amount=amount;
+detail::OAServiceFrame v;v.version=1;v.service="abstraction.resource/leases@1";v.method="AcquireFree";detail::enc_oa_leases_acquire_free_arguments(v.arguments,args,1);std::string frame;detail::enc_oa_service_frame(frame,v,0);detail::service_payload(frame);
+auto response=transport_.exchange_frame(frame);auto payload=detail::service_response(response,v.service,v.method);detail::Reader r{payload};r.depth=1;r.skip_ws();auto result=detail::decode_oa_leases_acquire_free_result(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");
 return result.value;
 }
 LeaseChangeResult renew(const std::string& lease)override{detail::OALeasesRenewArguments args;
@@ -3468,6 +3726,8 @@ DescribedService describe_service()const{DescribedService s{"abstraction.resourc
 void write_frame(std::string_view frame)override{auto v=detail::service_payload(frame);if(v.service!="abstraction.resource/leases@1")throw DispatchError("unknown_service");
 if(v.method=="Acquire"){
 throw DispatchError("wrong_mode");}
+if(v.method=="AcquireFree"){
+throw DispatchError("wrong_mode");}
 if(v.method=="Renew"){
 throw DispatchError("wrong_mode");}
 if(v.method=="Release"){
@@ -3483,6 +3743,8 @@ std::string exchange_frame(std::string_view frame)override{auto v=detail::servic
 try{
 if(v.method=="Acquire"){
 detail::Reader r{v.arguments};r.depth=1;r.skip_ws();auto args=detail::decode_oa_leases_acquire_arguments(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");auto payload=invoke_acquire(args);return detail::service_reply(v,payload);}
+if(v.method=="AcquireFree"){
+detail::Reader r{v.arguments};r.depth=1;r.skip_ws();auto args=detail::decode_oa_leases_acquire_free_arguments(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");auto payload=invoke_acquire_free(args);return detail::service_reply(v,payload);}
 if(v.method=="Renew"){
 detail::Reader r{v.arguments};r.depth=1;r.skip_ws();auto args=detail::decode_oa_leases_renew_arguments(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");auto payload=invoke_renew(args);return detail::service_reply(v,payload);}
 if(v.method=="Release"){
@@ -3505,6 +3767,17 @@ try{
 detail::OALeasesAcquireResult value;
 value.value=result;
 Raw payload;detail::enc_oa_leases_acquire_result(payload,value,1);detail::Reader r{payload};r.depth=1;r.skip_ws();detail::decode_oa_leases_acquire_result(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");return payload;
+}catch(...){throw ServiceError("invalid_result","");}
+}
+Raw invoke_acquire_free(const detail::OALeasesAcquireFreeArguments&args){
+AcquireFreeResult result{};
+try{
+result=handler.acquire_free(args.resource,args.amount);
+}catch(const ServiceError&){throw;}catch(...){throw ServiceError("handler_error","handler failed");}
+try{
+detail::OALeasesAcquireFreeResult value;
+value.value=result;
+Raw payload;detail::enc_oa_leases_acquire_free_result(payload,value,1);detail::Reader r{payload};r.depth=1;r.skip_ws();detail::decode_oa_leases_acquire_free_result(r);r.skip_ws();if(r.pos!=r.buf.size())r.refuse("trailing_bytes");return payload;
 }catch(...){throw ServiceError("invalid_result","");}
 }
 Raw invoke_renew(const detail::OALeasesRenewArguments&args){

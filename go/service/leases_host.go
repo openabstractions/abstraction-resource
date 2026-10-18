@@ -84,7 +84,26 @@ func (r *leaseReceiver) Acquire(resource string, amount, waitMs int64) (wire.Acq
 	if err != nil {
 		return wire.AcquireResult{}, err
 	}
-	return r.book.Acquire(r.context(), who, peer, resource, amount, waitMs), nil
+	ctx := r.context()
+	if r.call != nil {
+		// Acquire waits for attached holders to yield. Tie that work to the
+		// caller's connection so a cancelled wait does not continue to grant.
+		ctx = r.call.WaitContext()
+	}
+	return r.book.Acquire(ctx, who, peer, resource, amount, waitMs), nil
+}
+
+// AcquireFree is the no-yield acquire (RES-L6). It asks nobody, so it
+// waits for nobody either.
+func (r *leaseReceiver) AcquireFree(resource string, amount int64) (wire.AcquireFreeResult, error) {
+	if err := r.recheck(); err != nil {
+		return wire.AcquireFreeResult{}, err
+	}
+	who, peer, err := r.caller()
+	if err != nil {
+		return wire.AcquireFreeResult{}, err
+	}
+	return r.book.AcquireFree(r.context(), who, peer, resource, amount), nil
 }
 
 func (r *leaseReceiver) Renew(lease string) (wire.LeaseChangeResult, error) {

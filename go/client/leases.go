@@ -40,6 +40,21 @@ func (c *Client) AcquireContext(ctx context.Context, resource string, amount int
 	return c.leases(ctx, wait+AcquireBudget).Acquire(resource, amount, wait.Milliseconds())
 }
 
+// AcquireFree asks for amount bytes of resource for this program only from
+// what is free now. It never asks a holder to yield: a resource others hold
+// reads held (CONTRACT.md RES-L6).
+func (c *Client) AcquireFree(resource string, amount int64) (AcquireFreeResult, error) {
+	return c.AcquireFreeContext(context.Background(), resource, amount)
+}
+
+// AcquireFreeContext uses ctx only for this operation.
+func (c *Client) AcquireFreeContext(ctx context.Context, resource string, amount int64) (AcquireFreeResult, error) {
+	if err := ctx.Err(); err != nil {
+		return AcquireFreeResult{}, err
+	}
+	return c.leases(ctx, AcquireBudget).AcquireFree(resource, amount)
+}
+
 // Renew extends this program's own lease.
 func (c *Client) Renew(lease string) (LeaseChange, error) {
 	return c.RenewContext(context.Background(), lease)

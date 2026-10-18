@@ -231,6 +231,68 @@ impl PartialEq<&str> for AcquireOutcome {
     }
 }
 
+/// The closed vocabulary AcquireFreeOutcome. A reader refuses a name it does not list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AcquireFreeOutcome {
+    Acquired,
+    Insufficient,
+    NotPermitted,
+    Unavailable,
+    Invalid,
+    Forbidden,
+    Held,
+}
+
+impl AcquireFreeOutcome {
+    /// Every member, in declaration order.
+    pub const ALL: [Self; 7] = [Self::Acquired, Self::Insufficient, Self::NotPermitted, Self::Unavailable, Self::Invalid, Self::Forbidden, Self::Held];
+
+    /// The member's name on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acquired => "acquired",
+            Self::Insufficient => "insufficient",
+            Self::NotPermitted => "not_permitted",
+            Self::Unavailable => "unavailable",
+            Self::Invalid => "invalid",
+            Self::Forbidden => "forbidden",
+            Self::Held => "held",
+        }
+    }
+
+    /// The member a wire name spells, or `None` for a name this vocabulary refuses.
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "acquired" => Some(Self::Acquired),
+            "insufficient" => Some(Self::Insufficient),
+            "not_permitted" => Some(Self::NotPermitted),
+            "unavailable" => Some(Self::Unavailable),
+            "invalid" => Some(Self::Invalid),
+            "forbidden" => Some(Self::Forbidden),
+            "held" => Some(Self::Held),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AcquireFreeOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<str> for AcquireFreeOutcome {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for AcquireFreeOutcome {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 /// The closed vocabulary YieldAnswer. A reader refuses a name it does not list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum YieldAnswer {
@@ -442,6 +504,16 @@ pub struct AcquireResult {
     pub asked: Vec<YieldRecord>,
 }
 
+/// lease is present exactly for acquired. asked is always empty: AcquireFree
+/// asks nobody to yield. Its outcomes belong to this new method; Acquire
+/// retains its published closed vocabulary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcquireFreeResult {
+    pub outcome: AcquireFreeOutcome,
+    pub lease: Option<Lease>,
+    pub asked: Vec<YieldRecord>,
+}
+
 /// A request that this holder give back the named lease of amount bytes of
 /// resource. reason names the program that asked, as rights names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -519,6 +591,12 @@ struct OALeasesAcquireArguments {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OALeasesAcquireFreeArguments {
+    resource: String,
+    amount: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct OALeasesRenewArguments {
     lease: String,
 }
@@ -583,6 +661,11 @@ struct OATableHoldersResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OALeasesAcquireResult {
     value: AcquireResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OALeasesAcquireFreeResult {
+    value: AcquireFreeResult,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -756,6 +839,24 @@ fn enc_oa_leases_acquire_arguments(out: &mut Vec<u8>, v: &OALeasesAcquireArgumen
     esc(out, "wait_ms");
     out.extend_from_slice(b": ");
     num(out, v.wait_ms);
+    out.push(b'\n');
+    pad(out, depth);
+    out.push(b'}');
+}
+
+fn enc_oa_leases_acquire_free_arguments(out: &mut Vec<u8>, v: &OALeasesAcquireFreeArguments, depth: i32) {
+    out.push(b'{');
+    out.push(b'\n');
+    pad(out, depth + 1);
+    esc(out, "resource");
+    out.extend_from_slice(b": ");
+    esc(out, &v.resource);
+    out.push(b',');
+    out.push(b'\n');
+    pad(out, depth + 1);
+    esc(out, "amount");
+    out.extend_from_slice(b": ");
+    num(out, v.amount);
     out.push(b'\n');
     pad(out, depth);
     out.push(b'}');
@@ -2027,6 +2128,81 @@ fn decode_acquire_result(r: &mut Reader) -> Result<AcquireResult, Refusal> {
     })
 }
 
+fn decode_acquire_free_result(r: &mut Reader) -> Result<AcquireFreeResult, Refusal> {
+    if r.at() != b'{' {
+        return r.refuse("wrong_type");
+    }
+    r.enter()?;
+    r.pos += 1;
+    let mut field_outcome: Option<String> = None;
+    let mut field_lease: Option<Lease> = None;
+    let mut field_asked: Vec<YieldRecord> = Default::default();
+    let mut seen: u32 = 0;
+    r.skip_ws();
+    if r.at() != b'}' {
+        loop {
+            r.skip_ws();
+            if r.at() != b'"' {
+                return r.refuse("malformed");
+            }
+            let key = r.string()?;
+            r.skip_ws();
+            if r.at() != b':' {
+                return r.refuse("malformed");
+            }
+            r.pos += 1;
+            r.skip_ws();
+            match key.as_str() {
+                "outcome" => {
+                    if seen & 1 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 1;
+                    field_outcome = Some(r.string()?);
+                }
+                "lease" => {
+                    if seen & 2 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 2;
+                    field_lease = Some(decode_lease(r)?);
+                }
+                "asked" => {
+                    if seen & 4 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 4;
+                    field_asked = decode_list(r, decode_yield_record)?;
+                }
+                _ => {
+                    return r.refuse("unknown_field");
+                }
+            }
+            r.skip_ws();
+            if r.at() != b',' {
+                break;
+            }
+            r.pos += 1;
+        }
+    }
+    if r.at() != b'}' {
+        return r.refuse("malformed");
+    }
+    r.pos += 1;
+    r.depth -= 1;
+    if seen & 5 != 5 {
+        return r.refuse("missing_field");
+    }
+    let Some(field_outcome) = field_outcome.as_deref().and_then(AcquireFreeOutcome::from_wire) else {
+        return r.refuse("bad_enum");
+    };
+    Ok(AcquireFreeResult {
+        outcome: field_outcome,
+        lease: field_lease,
+        asked: field_asked,
+    })
+}
+
 fn decode_yield_request(r: &mut Reader) -> Result<YieldRequest, Refusal> {
     if r.at() != b'{' {
         return r.refuse("wrong_type");
@@ -2719,6 +2895,69 @@ fn decode_oa_leases_acquire_arguments(r: &mut Reader) -> Result<OALeasesAcquireA
         resource: field_resource,
         amount: field_amount,
         wait_ms: field_wait_ms,
+    })
+}
+
+fn decode_oa_leases_acquire_free_arguments(r: &mut Reader) -> Result<OALeasesAcquireFreeArguments, Refusal> {
+    if r.at() != b'{' {
+        return r.refuse("wrong_type");
+    }
+    r.enter()?;
+    r.pos += 1;
+    let mut field_resource: String = Default::default();
+    let mut field_amount: i64 = Default::default();
+    let mut seen: u32 = 0;
+    r.skip_ws();
+    if r.at() != b'}' {
+        loop {
+            r.skip_ws();
+            if r.at() != b'"' {
+                return r.refuse("malformed");
+            }
+            let key = r.string()?;
+            r.skip_ws();
+            if r.at() != b':' {
+                return r.refuse("malformed");
+            }
+            r.pos += 1;
+            r.skip_ws();
+            match key.as_str() {
+                "resource" => {
+                    if seen & 1 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 1;
+                    field_resource = r.string()?;
+                }
+                "amount" => {
+                    if seen & 2 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 2;
+                    field_amount = r.integer(i64::MIN, i64::MAX)?;
+                }
+                _ => {
+                    return r.refuse("unknown_field");
+                }
+            }
+            r.skip_ws();
+            if r.at() != b',' {
+                break;
+            }
+            r.pos += 1;
+        }
+    }
+    if r.at() != b'}' {
+        return r.refuse("malformed");
+    }
+    r.pos += 1;
+    r.depth -= 1;
+    if seen & 3 != 3 {
+        return r.refuse("missing_field");
+    }
+    Ok(OALeasesAcquireFreeArguments {
+        resource: field_resource,
+        amount: field_amount,
     })
 }
 
@@ -3436,6 +3675,63 @@ fn decode_oa_leases_acquire_result(r: &mut Reader) -> Result<OALeasesAcquireResu
     })
 }
 
+fn decode_oa_leases_acquire_free_result(r: &mut Reader) -> Result<OALeasesAcquireFreeResult, Refusal> {
+    if r.at() != b'{' {
+        return r.refuse("wrong_type");
+    }
+    r.enter()?;
+    r.pos += 1;
+    let mut field_value: Option<AcquireFreeResult> = None;
+    let mut seen: u32 = 0;
+    r.skip_ws();
+    if r.at() != b'}' {
+        loop {
+            r.skip_ws();
+            if r.at() != b'"' {
+                return r.refuse("malformed");
+            }
+            let key = r.string()?;
+            r.skip_ws();
+            if r.at() != b':' {
+                return r.refuse("malformed");
+            }
+            r.pos += 1;
+            r.skip_ws();
+            match key.as_str() {
+                "value" => {
+                    if seen & 1 != 0 {
+                        return r.refuse("duplicate_field");
+                    }
+                    seen |= 1;
+                    field_value = Some(decode_acquire_free_result(r)?);
+                }
+                _ => {
+                    return r.refuse("unknown_field");
+                }
+            }
+            r.skip_ws();
+            if r.at() != b',' {
+                break;
+            }
+            r.pos += 1;
+        }
+    }
+    if r.at() != b'}' {
+        return r.refuse("malformed");
+    }
+    r.pos += 1;
+    r.depth -= 1;
+    if seen & 1 != 1 {
+        return r.refuse("missing_field");
+    }
+    let Some(field_value) = field_value else {
+        return r.refuse("missing_field");
+    };
+    Ok(OALeasesAcquireFreeResult {
+        value: field_value,
+    })
+}
+
 fn decode_oa_leases_renew_result(r: &mut Reader) -> Result<OALeasesRenewResult, Refusal> {
     if r.at() != b'{' {
         return r.refuse("wrong_type");
@@ -3744,6 +4040,10 @@ fn service_check_oa_leases_acquire_arguments(_v: &OALeasesAcquireArguments) -> R
     Ok(())
 }
 
+fn service_check_oa_leases_acquire_free_arguments(_v: &OALeasesAcquireFreeArguments) -> Result<(), Refusal> {
+    Ok(())
+}
+
 fn service_check_oa_leases_renew_arguments(_v: &OALeasesRenewArguments) -> Result<(), Refusal> {
     Ok(())
 }
@@ -3904,6 +4204,16 @@ pub trait Leases {
     /// the service's order and the result is acquired or holders_refused.
     /// Nothing is killed.
     fn acquire(&self, resource: String, amount: i64, wait_ms: i64) -> Result<AcquireResult, Self::Error>;
+    /// Reserve amount bytes for the bound caller only from what is free now,
+    /// asking nobody: a request that can take nothing from another holder, such
+    /// as speculative work (RES-L6). Order: the rights decision for
+    /// abstraction.resource/hold on resource (not_permitted, or unavailable
+    /// when the decision point cannot answer), then the table (insufficient
+    /// when the pool is known and amount exceeds it), then one grant decision
+    /// under the book's lock: acquired when amount fits what is free, or when
+    /// the resource has no pool and nothing holds it, otherwise held. asked is
+    /// always empty: no yield request is ever sent.
+    fn acquire_free(&self, resource: String, amount: i64) -> Result<AcquireFreeResult, Self::Error>;
     /// Extend renew_by of the bound caller's own lease.
     fn renew(&self, lease: String) -> Result<LeaseChangeResult, Self::Error>;
     /// End the bound caller's own lease now.
@@ -3962,6 +4272,30 @@ impl<T: FrameTransport> Leases for LeasesClient<T> {
             return Err(CallError::Service(ServiceError { code: error.code, message: error.message }));
         }
         let result = service_decode(&reply.payload, decode_oa_leases_acquire_result).map_err(CallError::Refusal)?;
+        Ok(result.value)
+    }
+
+    fn acquire_free(&self, resource: String, amount: i64) -> Result<AcquireFreeResult, Self::Error> {
+        let args = OALeasesAcquireFreeArguments { resource, amount };
+        let arguments = service_encode(&args, service_check_oa_leases_acquire_free_arguments, enc_oa_leases_acquire_free_arguments, decode_oa_leases_acquire_free_arguments).map_err(CallError::Refusal)?;
+        let request = OAServiceFrame { version: 1, service: "abstraction.resource/leases@1".into(), method: "AcquireFree".into(), arguments };
+        let frame = service_encode(&request, service_check_oa_service_frame, enc_oa_service_frame, decode_oa_service_frame).map_err(CallError::Refusal)?;
+        let reply = self.transport.exchange_frame(&frame).map_err(CallError::Transport)?;
+        let reply = service_decode(&reply, decode_oa_service_reply).map_err(CallError::Refusal)?;
+        if reply.version != 1 {
+            return Err(CallError::Dispatch("unknown_version"));
+        }
+        if reply.service != "abstraction.resource/leases@1" || reply.method != "AcquireFree" {
+            return Err(CallError::Dispatch("mismatched_response"));
+        }
+        if !reply.ok {
+            let error = service_decode(&reply.payload, decode_oa_service_error).map_err(CallError::Refusal)?;
+            if error.code.is_empty() {
+                return Err(CallError::Dispatch("invalid_error"));
+            }
+            return Err(CallError::Service(ServiceError { code: error.code, message: error.message }));
+        }
+        let result = service_decode(&reply.payload, decode_oa_leases_acquire_free_result).map_err(CallError::Refusal)?;
         Ok(result.value)
     }
 

@@ -42,6 +42,11 @@
 <li>Argument 2: <code>i64</code> <code>amount</code> (required, including zero/false/empty)</li>
 <li>Argument 3: <code>i64</code> <code>wait_ms</code> (required, including zero/false/empty)</li>
 </ul>
+<p>Reserve amount bytes for the bound caller only from what is free now, asking nobody: a request that can take nothing from another holder, such as speculative work (RES-L6). Order: the rights decision for abstraction.resource/hold on resource (not_permitted, or unavailable when the decision point cannot answer), then the table (insufficient when the pool is known and amount exceeds it), then one grant decision under the book&#39;s lock: acquired when amount fits what is free, or when the resource has no pool and nothing holds it, otherwise held. asked is always empty: no yield request is ever sent.</p>
+<h3><code>AcquireFree</code></h3><p><code>request-response</code> <code>AcquireFreeResult</code></p><ul>
+<li>Argument 1: <code>string</code> <code>resource</code> (required, including zero/false/empty)</li>
+<li>Argument 2: <code>i64</code> <code>amount</code> (required, including zero/false/empty)</li>
+</ul>
 <p>Extend renew_by of the bound caller&#39;s own lease.</p>
 <h3><code>Renew</code></h3><p><code>request-response</code> <code>LeaseChangeResult</code></p><ul>
 <li>Argument 1: <code>string</code> <code>lease</code> (required, including zero/false/empty)</li>
@@ -83,7 +88,7 @@
 <div class="wrap"><table>
 <thead><tr><th>kind</th><th>types</th></tr></thead>
 <tbody>
-<tr><td>built in</td><td><code>AcquireOutcome</code> <code>Evidence</code> <code>ProcessBindOutcome</code> <code>ResourceCallOutcome</code> <code>bool</code> <code>i64</code> <code>string</code></td></tr>
+<tr><td>built in</td><td><code>AcquireFreeOutcome</code> <code>AcquireOutcome</code> <code>Evidence</code> <code>ProcessBindOutcome</code> <code>ResourceCallOutcome</code> <code>bool</code> <code>i64</code> <code>string</code></td></tr>
 <tr><td>declared below</td><td><code>AnswerResult</code> <code>Lease</code> <code>LeaseChange</code> <code>ResourceList</code> <code>ResourceState</code> <code>YieldPage</code></td></tr>
 <tr><td>container <span class="tag">[DEF-T3]</span></td><td><code>list&lt;string&gt;</code></td></tr>
 <tr><td>repeated record <span class="tag">[DEF-A9]</span></td><td><code>list&lt;Holder&gt;</code> <code>list&lt;YieldRecord&gt;</code> <code>list&lt;YieldRequest&gt;</code></td></tr>
@@ -174,6 +179,15 @@
 <thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
 <tbody>
 <tr><td>1</td><td><code>outcome</code></td><td><code>AcquireOutcome</code></td><td>required</td><td>—</td></tr>
+<tr><td>2</td><td><code>lease</code></td><td><code>Lease</code></td><td>optional · omitted when absent</td><td>—</td></tr>
+<tr><td>3</td><td><code>asked</code></td><td><code>list&lt;YieldRecord&gt;</code></td><td>required</td><td>—</td></tr>
+</tbody></table></div>
+<h3 id="struct-AcquireFreeResult"><code>AcquireFreeResult</code></h3>
+<p class="meta">unknown fields <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>field</th><th>type</th><th>presence</th><th>named elsewhere</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>outcome</code></td><td><code>AcquireFreeOutcome</code></td><td>required</td><td>—</td></tr>
 <tr><td>2</td><td><code>lease</code></td><td><code>Lease</code></td><td>optional · omitted when absent</td><td>—</td></tr>
 <tr><td>3</td><td><code>asked</code></td><td><code>list&lt;YieldRecord&gt;</code></td><td>required</td><td>—</td></tr>
 </tbody></table></div>
@@ -277,6 +291,19 @@
 <tr><td>5</td><td><code>unavailable</code></td><td><code>unavailable</code></td></tr>
 <tr><td>6</td><td><code>invalid</code></td><td><code>invalid</code></td></tr>
 <tr><td>7</td><td><code>forbidden</code></td><td><code>forbidden</code></td></tr>
+</tbody></table></div>
+<h3 id="enum-AcquireFreeOutcome"><code>AcquireFreeOutcome</code></h3>
+<p class="meta">a member this reader does not know is <code>refuse</code></p>
+<div class="wrap"><table>
+<thead><tr><th>id</th><th>member</th><th>wire</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>acquired</code></td><td><code>acquired</code></td></tr>
+<tr><td>2</td><td><code>insufficient</code></td><td><code>insufficient</code></td></tr>
+<tr><td>3</td><td><code>not_permitted</code></td><td><code>not_permitted</code></td></tr>
+<tr><td>4</td><td><code>unavailable</code></td><td><code>unavailable</code></td></tr>
+<tr><td>5</td><td><code>invalid</code></td><td><code>invalid</code></td></tr>
+<tr><td>6</td><td><code>forbidden</code></td><td><code>forbidden</code></td></tr>
+<tr><td>7</td><td><code>held</code></td><td><code>held</code></td></tr>
 </tbody></table></div>
 <h3 id="enum-YieldAnswer"><code>YieldAnswer</code></h3>
 <p class="meta">a member this reader does not know is <code>refuse</code></p>

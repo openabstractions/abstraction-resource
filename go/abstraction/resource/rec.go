@@ -541,6 +541,130 @@ func (v AcquireOutcome) Known() bool {
 	return ok
 }
 
+// AcquireFreeOutcome is a closed vocabulary. Its numeric values are private implementation
+// tags; String and ParseAcquireFreeOutcome preserve the exact wire words.
+type AcquireFreeOutcome uint32
+
+const (
+	AcquireFreeOutcomeAcquired     AcquireFreeOutcome = 1
+	AcquireFreeOutcomeInsufficient AcquireFreeOutcome = 2
+	AcquireFreeOutcomeNotPermitted AcquireFreeOutcome = 3
+	AcquireFreeOutcomeUnavailable  AcquireFreeOutcome = 4
+	AcquireFreeOutcomeInvalid      AcquireFreeOutcome = 5
+	AcquireFreeOutcomeForbidden    AcquireFreeOutcome = 6
+	AcquireFreeOutcomeHeld         AcquireFreeOutcome = 7
+)
+
+// String returns v's exact wire word, or the empty string for an invalid value.
+func (v AcquireFreeOutcome) String() string {
+	word, _ := v.WireName()
+	return word
+}
+
+// WireName returns v's exact wire word and whether v names a member.
+func (v AcquireFreeOutcome) WireName() (string, bool) {
+	switch v {
+	case AcquireFreeOutcomeAcquired:
+		return "acquired", true
+	case AcquireFreeOutcomeInsufficient:
+		return "insufficient", true
+	case AcquireFreeOutcomeNotPermitted:
+		return "not_permitted", true
+	case AcquireFreeOutcomeUnavailable:
+		return "unavailable", true
+	case AcquireFreeOutcomeInvalid:
+		return "invalid", true
+	case AcquireFreeOutcomeForbidden:
+		return "forbidden", true
+	case AcquireFreeOutcomeHeld:
+		return "held", true
+	}
+	return "", false
+}
+
+// ParseAcquireFreeOutcome returns the member named by an exact wire word.
+func ParseAcquireFreeOutcome(word string) (AcquireFreeOutcome, bool) {
+	switch word {
+	case "acquired":
+		return AcquireFreeOutcomeAcquired, true
+	case "insufficient":
+		return AcquireFreeOutcomeInsufficient, true
+	case "not_permitted":
+		return AcquireFreeOutcomeNotPermitted, true
+	case "unavailable":
+		return AcquireFreeOutcomeUnavailable, true
+	case "invalid":
+		return AcquireFreeOutcomeInvalid, true
+	case "forbidden":
+		return AcquireFreeOutcomeForbidden, true
+	case "held":
+		return AcquireFreeOutcomeHeld, true
+	}
+	return AcquireFreeOutcome(0), false
+}
+
+// MarshalText preserves the member's exact wire word for standard text users,
+// including JSON object keys. Invalid and zero values are refused.
+func (v AcquireFreeOutcome) MarshalText() ([]byte, error) {
+	word, ok := v.WireName()
+	if !ok {
+		return nil, &Refusal{Word: "bad_enum", Offset: 0}
+	}
+	return []byte(word), nil
+}
+
+// UnmarshalText accepts an exact wire word and refuses unknown text.
+func (v *AcquireFreeOutcome) UnmarshalText(text []byte) error {
+	word, ok := ParseAcquireFreeOutcome(string(text))
+	if !ok {
+		return &Refusal{Word: "bad_enum", Offset: 0}
+	}
+	*v = word
+	return nil
+}
+
+// MarshalJSON keeps closed vocabularies as JSON strings rather than their
+// private numeric implementation tags.
+func (v AcquireFreeOutcome) MarshalJSON() ([]byte, error) {
+	word, ok := v.WireName()
+	if !ok {
+		return nil, &Refusal{Word: "bad_enum", Offset: 0}
+	}
+	return esc(nil, word), nil
+}
+
+// UnmarshalJSON accepts only an exact JSON string member. Numbers, null and
+// unknown strings are refused by the same codec rules as generated records.
+func (v *AcquireFreeOutcome) UnmarshalJSON(data []byte) error {
+	r := reader{buf: data}
+	r.ws()
+	word, err := r.str()
+	if err != nil {
+		return err
+	}
+	r.ws()
+	if r.pos != len(r.buf) {
+		return r.refuse("trailing_bytes")
+	}
+	parsed, ok := ParseAcquireFreeOutcome(word)
+	if !ok {
+		return r.refuse("bad_enum")
+	}
+	*v = parsed
+	return nil
+}
+
+// AcquireFreeOutcomeValues returns every member of AcquireFreeOutcome in declaration order, in a new slice.
+func AcquireFreeOutcomeValues() []AcquireFreeOutcome {
+	return []AcquireFreeOutcome{AcquireFreeOutcomeAcquired, AcquireFreeOutcomeInsufficient, AcquireFreeOutcomeNotPermitted, AcquireFreeOutcomeUnavailable, AcquireFreeOutcomeInvalid, AcquireFreeOutcomeForbidden, AcquireFreeOutcomeHeld}
+}
+
+// Known reports whether v is a member of AcquireFreeOutcome.
+func (v AcquireFreeOutcome) Known() bool {
+	_, ok := v.WireName()
+	return ok
+}
+
 // YieldAnswer is a closed vocabulary. Its numeric values are private implementation
 // tags; String and ParseYieldAnswer preserve the exact wire words.
 type YieldAnswer uint32
@@ -871,6 +995,15 @@ type AcquireResult struct {
 	Asked   []YieldRecord
 }
 
+// lease is present exactly for acquired. asked is always empty: AcquireFree
+// asks nobody to yield. Its outcomes belong to this new method; Acquire retains
+// its published closed vocabulary.
+type AcquireFreeResult struct {
+	Outcome AcquireFreeOutcome
+	Lease   *Lease
+	Asked   []YieldRecord
+}
+
 // A request that this holder give back the named lease of amount bytes of
 // resource. reason names the program that asked, as rights names it.
 type YieldRequest struct {
@@ -936,6 +1069,11 @@ type oaLeasesAcquireArguments struct {
 	WaitMs   int64
 }
 
+type oaLeasesAcquireFreeArguments struct {
+	Resource string
+	Amount   int64
+}
+
 type oaLeasesRenewArguments struct {
 	Lease string
 }
@@ -990,6 +1128,10 @@ type oaTableHoldersResult struct {
 
 type oaLeasesAcquireResult struct {
 	Value AcquireResult
+}
+
+type oaLeasesAcquireFreeResult struct {
+	Value AcquireFreeResult
 }
 
 type oaLeasesRenewResult struct {
@@ -1278,6 +1420,35 @@ func encAcquireResult(out []byte, v *AcquireResult, depth int) []byte {
 	return append(out, '}')
 }
 
+func encAcquireFreeResult(out []byte, v *AcquireFreeResult, depth int) []byte {
+	if !(v.Outcome).Known() {
+		panic(&Refusal{Word: "bad_enum", Offset: 0})
+	}
+	out = append(out, '{')
+	out = append(out, '\n')
+	out = pad(out, depth+1)
+	out = esc(out, "outcome")
+	out = append(out, ':', ' ')
+	out = esc(out, v.Outcome.String())
+	if v.Lease != nil {
+		out = append(out, ',')
+		out = append(out, '\n')
+		out = pad(out, depth+1)
+		out = esc(out, "lease")
+		out = append(out, ':', ' ')
+		out = encLease(out, v.Lease, depth+1)
+	}
+	out = append(out, ',')
+	out = append(out, '\n')
+	out = pad(out, depth+1)
+	out = esc(out, "asked")
+	out = append(out, ':', ' ')
+	out = encList(out, v.Asked, depth+1, encYieldRecord)
+	out = append(out, '\n')
+	out = pad(out, depth)
+	return append(out, '}')
+}
+
 func encYieldRequest(out []byte, v *YieldRequest, depth int) []byte {
 	out = append(out, '{')
 	out = append(out, '\n')
@@ -1513,6 +1684,24 @@ func encOALeasesAcquireArguments(out []byte, v *oaLeasesAcquireArguments, depth 
 	return append(out, '}')
 }
 
+func encOALeasesAcquireFreeArguments(out []byte, v *oaLeasesAcquireFreeArguments, depth int) []byte {
+	out = append(out, '{')
+	out = append(out, '\n')
+	out = pad(out, depth+1)
+	out = esc(out, "resource")
+	out = append(out, ':', ' ')
+	out = esc(out, v.Resource)
+	out = append(out, ',')
+	out = append(out, '\n')
+	out = pad(out, depth+1)
+	out = esc(out, "amount")
+	out = append(out, ':', ' ')
+	out = num(out, v.Amount)
+	out = append(out, '\n')
+	out = pad(out, depth)
+	return append(out, '}')
+}
+
 func encOALeasesRenewArguments(out []byte, v *oaLeasesRenewArguments, depth int) []byte {
 	out = append(out, '{')
 	out = append(out, '\n')
@@ -1719,6 +1908,18 @@ func encOALeasesAcquireResult(out []byte, v *oaLeasesAcquireResult, depth int) [
 	out = esc(out, "value")
 	out = append(out, ':', ' ')
 	out = encAcquireResult(out, &v.Value, depth+1)
+	out = append(out, '\n')
+	out = pad(out, depth)
+	return append(out, '}')
+}
+
+func encOALeasesAcquireFreeResult(out []byte, v *oaLeasesAcquireFreeResult, depth int) []byte {
+	out = append(out, '{')
+	out = append(out, '\n')
+	out = pad(out, depth+1)
+	out = esc(out, "value")
+	out = append(out, ':', ' ')
+	out = encAcquireFreeResult(out, &v.Value, depth+1)
 	out = append(out, '\n')
 	out = pad(out, depth)
 	return append(out, '}')
@@ -3209,6 +3410,92 @@ func (r *reader) decodeAcquireResult() (*AcquireResult, error) {
 	return v, nil
 }
 
+func (r *reader) decodeAcquireFreeResult() (*AcquireFreeResult, error) {
+	if r.at() != '{' {
+		return nil, r.refuse("wrong_type")
+	}
+	if err := r.enter(); err != nil {
+		return nil, err
+	}
+	r.pos++
+	v := &AcquireFreeResult{}
+	var seen uint32
+	r.ws()
+	if r.at() != '}' {
+		for {
+			r.ws()
+			if r.at() != '"' {
+				return nil, r.refuse("malformed")
+			}
+			key, err := r.str()
+			if err != nil {
+				return nil, err
+			}
+			r.ws()
+			if r.at() != ':' {
+				return nil, r.refuse("malformed")
+			}
+			r.pos++
+			r.ws()
+			switch key {
+			case "outcome":
+				if seen&1 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 1
+				x, err := r.str()
+				if err != nil {
+					return nil, err
+				}
+				word, ok := ParseAcquireFreeOutcome(x)
+				if !ok {
+					return nil, r.refuse("bad_enum")
+				}
+				v.Outcome = word
+			case "lease":
+				if seen&2 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 2
+				x, err := r.decodeLease()
+				if err != nil {
+					return nil, err
+				}
+				v.Lease = x
+			case "asked":
+				if seen&4 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 4
+				x, err := decodeList(r, (*reader).decodeYieldRecord)
+				if err != nil {
+					return nil, err
+				}
+				v.Asked = x
+			default:
+				return nil, r.refuse("unknown_field")
+			}
+			r.ws()
+			if r.at() != ',' {
+				break
+			}
+			r.pos++
+		}
+	}
+	if r.at() != '}' {
+		return nil, r.refuse("malformed")
+	}
+	r.pos++
+	r.depth--
+	if seen&5 != 5 {
+		return nil, r.refuse("missing_field")
+	}
+	if !(v.Outcome).Known() {
+		return nil, r.refuse("bad_enum")
+	}
+	return v, nil
+}
+
 func (r *reader) decodeYieldRequest() (*YieldRequest, error) {
 	if r.at() != '{' {
 		return nil, r.refuse("wrong_type")
@@ -3993,6 +4280,75 @@ func (r *reader) decodeOALeasesAcquireArguments() (*oaLeasesAcquireArguments, er
 	return v, nil
 }
 
+func (r *reader) decodeOALeasesAcquireFreeArguments() (*oaLeasesAcquireFreeArguments, error) {
+	if r.at() != '{' {
+		return nil, r.refuse("wrong_type")
+	}
+	if err := r.enter(); err != nil {
+		return nil, err
+	}
+	r.pos++
+	v := &oaLeasesAcquireFreeArguments{}
+	var seen uint32
+	r.ws()
+	if r.at() != '}' {
+		for {
+			r.ws()
+			if r.at() != '"' {
+				return nil, r.refuse("malformed")
+			}
+			key, err := r.str()
+			if err != nil {
+				return nil, err
+			}
+			r.ws()
+			if r.at() != ':' {
+				return nil, r.refuse("malformed")
+			}
+			r.pos++
+			r.ws()
+			switch key {
+			case "resource":
+				if seen&1 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 1
+				x, err := r.str()
+				if err != nil {
+					return nil, err
+				}
+				v.Resource = x
+			case "amount":
+				if seen&2 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 2
+				x, err := r.integer(-9223372036854775808, 9223372036854775807)
+				if err != nil {
+					return nil, err
+				}
+				v.Amount = x
+			default:
+				return nil, r.refuse("unknown_field")
+			}
+			r.ws()
+			if r.at() != ',' {
+				break
+			}
+			r.pos++
+		}
+	}
+	if r.at() != '}' {
+		return nil, r.refuse("malformed")
+	}
+	r.pos++
+	r.depth--
+	if seen&3 != 3 {
+		return nil, r.refuse("missing_field")
+	}
+	return v, nil
+}
+
 func (r *reader) decodeOALeasesRenewArguments() (*oaLeasesRenewArguments, error) {
 	if r.at() != '{' {
 		return nil, r.refuse("wrong_type")
@@ -4744,6 +5100,65 @@ func (r *reader) decodeOALeasesAcquireResult() (*oaLeasesAcquireResult, error) {
 				}
 				seen |= 1
 				x, err := r.decodeAcquireResult()
+				if err != nil {
+					return nil, err
+				}
+				v.Value = *x
+			default:
+				return nil, r.refuse("unknown_field")
+			}
+			r.ws()
+			if r.at() != ',' {
+				break
+			}
+			r.pos++
+		}
+	}
+	if r.at() != '}' {
+		return nil, r.refuse("malformed")
+	}
+	r.pos++
+	r.depth--
+	if seen&1 != 1 {
+		return nil, r.refuse("missing_field")
+	}
+	return v, nil
+}
+
+func (r *reader) decodeOALeasesAcquireFreeResult() (*oaLeasesAcquireFreeResult, error) {
+	if r.at() != '{' {
+		return nil, r.refuse("wrong_type")
+	}
+	if err := r.enter(); err != nil {
+		return nil, err
+	}
+	r.pos++
+	v := &oaLeasesAcquireFreeResult{}
+	var seen uint32
+	r.ws()
+	if r.at() != '}' {
+		for {
+			r.ws()
+			if r.at() != '"' {
+				return nil, r.refuse("malformed")
+			}
+			key, err := r.str()
+			if err != nil {
+				return nil, err
+			}
+			r.ws()
+			if r.at() != ':' {
+				return nil, r.refuse("malformed")
+			}
+			r.pos++
+			r.ws()
+			switch key {
+			case "value":
+				if seen&1 != 0 {
+					return nil, r.refuse("duplicate_field")
+				}
+				seen |= 1
+				x, err := r.decodeAcquireFreeResult()
 				if err != nil {
 					return nil, err
 				}
@@ -5588,6 +6003,7 @@ func (d *TableDispatcher) invokeHolders(args *oaTableHoldersArguments) (payload 
 
 type Leases interface {
 	Acquire(resource string, amount, waitMs int64) (AcquireResult, error)
+	AcquireFree(resource string, amount int64) (AcquireFreeResult, error)
 	Renew(lease string) (LeaseChangeResult, error)
 	Release(lease string) (LeaseChangeResult, error)
 	Observe(cursor string, waitMs int64) (ObserveResult, error)
@@ -5633,6 +6049,48 @@ func (c *LeasesClient) Acquire(resource string, amount, waitMs int64) (result Ac
 	r.ws()
 	var decoded *oaLeasesAcquireResult
 	decoded, err = r.decodeOALeasesAcquireResult()
+	if err != nil {
+		return
+	}
+	_ = decoded
+	r.ws()
+	if r.pos != len(r.buf) {
+		err = r.refuse("trailing_bytes")
+		return
+	}
+	result = decoded.Value
+	return
+}
+func (c *LeasesClient) AcquireFree(resource string, amount int64) (result AcquireFreeResult, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			if e, ok := p.(*Refusal); ok {
+				err = e
+			} else {
+				panic(p)
+			}
+		}
+	}()
+	args := oaLeasesAcquireFreeArguments{Resource: resource, Amount: amount}
+	v := oaServiceFrame{Version: 1, Service: "abstraction.resource/leases@1", Method: "AcquireFree", Arguments: Raw(encOALeasesAcquireFreeArguments(nil, &args, 1))}
+	frame := encOAServiceFrame(nil, &v, 0)
+	if _, err = servicePayload(frame); err != nil {
+		return
+	}
+	var response []byte
+	response, err = c.transport.ExchangeFrame(frame)
+	if err != nil {
+		return
+	}
+	var payload Raw
+	payload, err = serviceResponse(response, v.Service, v.Method)
+	if err != nil {
+		return
+	}
+	r := &reader{buf: []byte(payload), depth: 1}
+	r.ws()
+	var decoded *oaLeasesAcquireFreeResult
+	decoded, err = r.decodeOALeasesAcquireFreeResult()
 	if err != nil {
 		return
 	}
@@ -5892,6 +6350,8 @@ func (d *LeasesDispatcher) WriteFrame(frame []byte) error {
 	switch v.Method {
 	case "Acquire":
 		return DispatchError("wrong_mode")
+	case "AcquireFree":
+		return DispatchError("wrong_mode")
 	case "Renew":
 		return DispatchError("wrong_mode")
 	case "Release":
@@ -5930,6 +6390,19 @@ func (d *LeasesDispatcher) ExchangeFrame(frame []byte) ([]byte, error) {
 			return serviceReply(v, "", r.refuse("trailing_bytes"))
 		}
 		payload, err := d.invokeAcquire(args)
+		return serviceReply(v, payload, err)
+	case "AcquireFree":
+		r := &reader{buf: []byte(v.Arguments), depth: 1}
+		r.ws()
+		args, err := r.decodeOALeasesAcquireFreeArguments()
+		if err != nil {
+			return serviceReply(v, "", err)
+		}
+		r.ws()
+		if r.pos != len(r.buf) {
+			return serviceReply(v, "", r.refuse("trailing_bytes"))
+		}
+		payload, err := d.invokeAcquireFree(args)
 		return serviceReply(v, payload, err)
 	case "Renew":
 		r := &reader{buf: []byte(v.Arguments), depth: 1}
@@ -6021,6 +6494,38 @@ func (d *LeasesDispatcher) invokeAcquire(args *oaLeasesAcquireArguments) (payloa
 	r := &reader{buf: []byte(payload), depth: 1}
 	r.ws()
 	if _, e := r.decodeOALeasesAcquireResult(); e != nil {
+		payload = ""
+		err = &ServiceError{Code: ServiceErrorCodeInvalidResult}
+		return
+	}
+	r.ws()
+	if r.pos != len(r.buf) {
+		payload = ""
+		err = &ServiceError{Code: ServiceErrorCodeInvalidResult}
+	}
+	return
+}
+func (d *LeasesDispatcher) invokeAcquireFree(args *oaLeasesAcquireFreeArguments) (payload Raw, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			payload = ""
+			if _, ok := p.(*Refusal); ok {
+				err = &ServiceError{Code: ServiceErrorCodeInvalidResult}
+			} else {
+				err = &ServiceError{Code: ServiceErrorCodeHandlerError, Message: "handler failed"}
+			}
+		}
+	}()
+	var result AcquireFreeResult
+	result, err = d.Handler.AcquireFree(args.Resource, args.Amount)
+	if err != nil {
+		return
+	}
+	value := oaLeasesAcquireFreeResult{Value: result}
+	payload = Raw(encOALeasesAcquireFreeResult(nil, &value, 1))
+	r := &reader{buf: []byte(payload), depth: 1}
+	r.ws()
+	if _, e := r.decodeOALeasesAcquireFreeResult(); e != nil {
 		payload = ""
 		err = &ServiceError{Code: ServiceErrorCodeInvalidResult}
 		return

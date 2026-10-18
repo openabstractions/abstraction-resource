@@ -180,6 +180,16 @@ class AcquireOutcome(_StrEnum):
     FORBIDDEN = "forbidden"
 
 
+class AcquireFreeOutcome(_StrEnum):
+    ACQUIRED = "acquired"
+    INSUFFICIENT = "insufficient"
+    NOT_PERMITTED = "not_permitted"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+    FORBIDDEN = "forbidden"
+    HELD = "held"
+
+
 class YieldAnswer(_StrEnum):
     YIELDED = "yielded"
     REFUSED = "refused"
@@ -305,6 +315,17 @@ class AcquireResult:
 
 
 @dataclasses.dataclass(kw_only=True)
+class AcquireFreeResult:
+    """lease is present exactly for acquired. asked is always empty: AcquireFree
+    asks nobody to yield. Its outcomes belong to this new method; Acquire
+    retains its published closed vocabulary."""
+
+    outcome: AcquireFreeOutcome | None = None
+    lease: Lease | None = None
+    asked: list[YieldRecord] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(kw_only=True)
 class YieldRequest:
     """A request that this holder give back the named lease of amount bytes of
     resource. reason names the program that asked, as rights names it."""
@@ -387,6 +408,12 @@ class _LeasesAcquireArguments:
 
 
 @dataclasses.dataclass(kw_only=True)
+class _LeasesAcquireFreeArguments:
+    resource: str = ""
+    amount: int = 0
+
+
+@dataclasses.dataclass(kw_only=True)
 class _LeasesRenewArguments:
     lease: str = ""
 
@@ -451,6 +478,11 @@ class _TableHoldersResult:
 @dataclasses.dataclass(kw_only=True)
 class _LeasesAcquireResult:
     value: AcquireResult = dataclasses.field(default_factory=AcquireResult)
+
+
+@dataclasses.dataclass(kw_only=True)
+class _LeasesAcquireFreeResult:
+    value: AcquireFreeResult = dataclasses.field(default_factory=AcquireFreeResult)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -729,6 +761,32 @@ def _write_acquire_result(out, v, depth):
     out += b"}"
 
 
+def _write_acquire_free_result(out, v, depth):
+    _closed_enum(AcquireFreeOutcome, v.outcome)
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "outcome")
+    out += b": "
+    _esc(out, v.outcome)
+    if v.lease is not None:
+        out += b","
+        out += b"\n"
+        _pad(out, depth + 1)
+        _esc(out, "lease")
+        out += b": "
+        _write_lease(out, v.lease, depth + 1)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "asked")
+    out += b": "
+    _write_list(out, v.asked, depth + 1, _write_yield_record)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
 def _write_yield_request(out, v, depth):
     out += b"{"
     out += b"\n"
@@ -940,6 +998,24 @@ def _write_oa_leases_acquire_arguments(out, v, depth):
     out += b"}"
 
 
+def _write_oa_leases_acquire_free_arguments(out, v, depth):
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "resource")
+    out += b": "
+    _esc(out, v.resource)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "amount")
+    out += b": "
+    _num(out, v.amount)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
 def _write_oa_leases_renew_arguments(out, v, depth):
     out += b"{"
     out += b"\n"
@@ -1140,6 +1216,18 @@ def _write_oa_leases_acquire_result(out, v, depth):
     _esc(out, "value")
     out += b": "
     _write_acquire_result(out, v.value, depth + 1)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
+def _write_oa_leases_acquire_free_result(out, v, depth):
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "value")
+    out += b": "
+    _write_acquire_free_result(out, v.value, depth + 1)
     out += b"\n"
     _pad(out, depth)
     out += b"}"
@@ -2093,6 +2181,59 @@ def _read_acquire_result(r):
     return v
 
 
+def _read_acquire_free_result(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = AcquireFreeResult()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "outcome":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.outcome = r.string()
+            elif key == "lease":
+                if seen & 2:
+                    raise r.refuse("duplicate_field")
+                seen |= 2
+                v.lease = _read_lease(r)
+            elif key == "asked":
+                if seen & 4:
+                    raise r.refuse("duplicate_field")
+                seen |= 4
+                v.asked = _read_list(r, _read_yield_record)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 5 != 5:
+        raise r.refuse("missing_field")
+    try:
+        v.outcome = AcquireFreeOutcome(v.outcome)
+    except ValueError:
+        raise r.refuse("bad_enum") from None
+    return v
+
+
 def _read_yield_request(r):
     if r.at() != _LBRACE:
         raise r.refuse("wrong_type")
@@ -2598,6 +2739,50 @@ def _read_oa_leases_acquire_arguments(r):
     return v
 
 
+def _read_oa_leases_acquire_free_arguments(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesAcquireFreeArguments()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "resource":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.resource = r.string()
+            elif key == "amount":
+                if seen & 2:
+                    raise r.refuse("duplicate_field")
+                seen |= 2
+                v.amount = r.integer(-9223372036854775808, 9223372036854775807)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 3 != 3:
+        raise r.refuse("missing_field")
+    return v
+
+
 def _read_oa_leases_renew_arguments(r):
     if r.at() != _LBRACE:
         raise r.refuse("wrong_type")
@@ -3091,6 +3276,45 @@ def _read_oa_leases_acquire_result(r):
     return v
 
 
+def _read_oa_leases_acquire_free_result(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesAcquireFreeResult()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "value":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.value = _read_acquire_free_result(r)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 1 != 1:
+        raise r.refuse("missing_field")
+    return v
+
+
 def _read_oa_leases_renew_result(r):
     if r.at() != _LBRACE:
         raise r.refuse("wrong_type")
@@ -3425,6 +3649,7 @@ _SERVICE_RECORDS = {
     "Lease": (Lease, [("id", "string", "never"), ("resource", "string", "never"), ("amount", "i64", "never"), ("since", "string", "never"), ("renew_by", "string", "never"), ]),
     "YieldRecord": (YieldRecord, [("holder", "string", "never"), ("amount", "i64", "never"), ("answer", "string", "never"), ("took_ms", "i64", "never"), ]),
     "AcquireResult": (AcquireResult, [("outcome", "enum", "never"), ("lease", "Lease", "absent"), ("asked", "list<YieldRecord>", "never"), ]),
+    "AcquireFreeResult": (AcquireFreeResult, [("outcome", "enum", "never"), ("lease", "Lease", "absent"), ("asked", "list<YieldRecord>", "never"), ]),
     "YieldRequest": (YieldRequest, [("id", "string", "never"), ("resource", "string", "never"), ("amount", "i64", "never"), ("reason", "string", "never"), ("at", "string", "never"), ("lease", "string", "never"), ]),
     "YieldPage": (YieldPage, [("requests", "list<YieldRequest>", "never"), ("next", "string", "never"), ]),
     "ObserveResult": (ObserveResult, [("outcome", "enum", "never"), ("page", "YieldPage", "absent"), ]),
@@ -3436,6 +3661,7 @@ _SERVICE_RECORDS = {
     "OATableResourcesArguments": (_TableResourcesArguments, []),
     "OATableHoldersArguments": (_TableHoldersArguments, [("resource", "string", "never"), ("fresh", "bool", "never"), ]),
     "OALeasesAcquireArguments": (_LeasesAcquireArguments, [("resource", "string", "never"), ("amount", "i64", "never"), ("wait_ms", "i64", "never"), ]),
+    "OALeasesAcquireFreeArguments": (_LeasesAcquireFreeArguments, [("resource", "string", "never"), ("amount", "i64", "never"), ]),
     "OALeasesRenewArguments": (_LeasesRenewArguments, [("lease", "string", "never"), ]),
     "OALeasesReleaseArguments": (_LeasesReleaseArguments, [("lease", "string", "never"), ]),
     "OALeasesObserveArguments": (_LeasesObserveArguments, [("cursor", "string", "never"), ("wait_ms", "i64", "never"), ]),
@@ -3447,6 +3673,7 @@ _SERVICE_RECORDS = {
     "OATableResourcesResult": (_TableResourcesResult, [("value", "ResourcesResult", "never"), ]),
     "OATableHoldersResult": (_TableHoldersResult, [("value", "HoldersResult", "never"), ]),
     "OALeasesAcquireResult": (_LeasesAcquireResult, [("value", "AcquireResult", "never"), ]),
+    "OALeasesAcquireFreeResult": (_LeasesAcquireFreeResult, [("value", "AcquireFreeResult", "never"), ]),
     "OALeasesRenewResult": (_LeasesRenewResult, [("value", "LeaseChangeResult", "never"), ]),
     "OALeasesReleaseResult": (_LeasesReleaseResult, [("value", "LeaseChangeResult", "never"), ]),
     "OALeasesObserveResult": (_LeasesObserveResult, [("value", "ObserveResult", "never"), ]),
@@ -3523,6 +3750,18 @@ class Leases:
         Nothing is killed."""
         raise NotImplementedError
 
+    def acquire_free(self, resource: str, amount: int) -> AcquireFreeResult:
+        """Reserve amount bytes for the bound caller only from what is free now,
+        asking nobody: a request that can take nothing from another holder, such
+        as speculative work (RES-L6). Order: the rights decision for
+        abstraction.resource/hold on resource (not_permitted, or unavailable
+        when the decision point cannot answer), then the table (insufficient
+        when the pool is known and amount exceeds it), then one grant decision
+        under the book's lock: acquired when amount fits what is free, or when
+        the resource has no pool and nothing holds it, otherwise held. asked is
+        always empty: no yield request is ever sent."""
+        raise NotImplementedError
+
     def renew(self, lease: str) -> LeaseChangeResult:
         """Extend renew_by of the bound caller's own lease."""
         raise NotImplementedError
@@ -3572,6 +3811,19 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Acquire", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Acquire")
         _result = _service_decode(_read_oa_leases_acquire_result, _payload, 1)
+        return _result.value
+
+    def acquire_free(self, resource: str, amount: int) -> AcquireFreeResult:
+        _service_check("string", resource)
+        _service_check("i64", amount)
+        _args = _LeasesAcquireFreeArguments()
+        _args.resource = resource
+        _args.amount = amount
+        _arguments = _service_encode(_write_oa_leases_acquire_free_arguments, _args, 1)
+        _service_decode(_read_oa_leases_acquire_free_arguments, _arguments, 1)
+        _request = _service_request("abstraction.resource/leases@1", "AcquireFree", _arguments)
+        _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "AcquireFree")
+        _result = _service_decode(_read_oa_leases_acquire_free_result, _payload, 1)
         return _result.value
 
     def renew(self, lease: str) -> LeaseChangeResult:

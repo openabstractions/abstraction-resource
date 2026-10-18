@@ -2,6 +2,7 @@
 
 // abstraction.resource: generated contract types, vocabularies and service clients.
 export {
+  AcquireFreeOutcome,
   AcquireOutcome,
   DispatchError,
   Evidence,
@@ -18,6 +19,7 @@ export {
   decode,
   encode,
   knownResources,
+  newAcquireFreeResult,
   newAcquireResult,
   newAnswerCallResult,
   newAnswerResult,
