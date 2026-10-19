@@ -5,11 +5,13 @@ import (
 	"time"
 
 	wire "github.com/openabstractions/abstraction-resource/go/abstraction/resource"
+	rights "github.com/openabstractions/abstraction-rights/go/abstraction/rights/api"
 )
 
 // The rights rules a caller of this client needs. Hold is decided on the
-// resource asked for; Yield is the service's own rule on an attached holder
-// (CONTRACT.md RES-L1, RES-L3).
+// resource asked for; Yield is the service's own rule on a lease holder's
+// program, the person's switch for that app's leases (CONTRACT.md RES-L1,
+// RES-L3).
 const (
 	ActionHold  = "abstraction.resource/hold"
 	ActionYield = "abstraction.resource/yield"
@@ -38,6 +40,15 @@ func (c *Client) AcquireContext(ctx context.Context, resource string, amount int
 		return AcquireResult{}, err
 	}
 	return c.leases(ctx, wait+AcquireBudget).Acquire(resource, amount, wait.Milliseconds())
+}
+
+// AcquireForContext delegates admission to the receiving service's designated
+// enforcer gate. The subject is an assertion, never client-side authority.
+func (c *Client) AcquireForContext(ctx context.Context, subject rights.Subject, resource string, amount int64, wait time.Duration) (AcquireResult, error) {
+	if err := ctx.Err(); err != nil {
+		return AcquireResult{}, err
+	}
+	return c.leases(ctx, wait+AcquireBudget).AcquireFor(subject, resource, amount, wait.Milliseconds())
 }
 
 // AcquireFree asks for amount bytes of resource for this program only from
@@ -69,7 +80,7 @@ func (c *Client) RenewContext(ctx context.Context, lease string) (LeaseChange, e
 	if err != nil {
 		return LeaseChange{}, err
 	}
-	if err := callResultError("Renew", reply.Outcome, reply.Change != nil); err != nil {
+	if err := callResultError("Renew", reply.Outcome); err != nil {
 		return LeaseChange{}, err
 	}
 	return *reply.Change, nil
@@ -89,7 +100,29 @@ func (c *Client) ReleaseContext(ctx context.Context, lease string) (LeaseChange,
 	if err != nil {
 		return LeaseChange{}, err
 	}
-	if err := callResultError("Release", reply.Outcome, reply.Change != nil); err != nil {
+	if err := callResultError("Release", reply.Outcome); err != nil {
+		return LeaseChange{}, err
+	}
+	return *reply.Change, nil
+}
+
+// Label names what this program's own lease holds, as app: model, for a
+// person reading the machine's memory. text is one line of at most 200
+// bytes; empty clears it. It carries no authority.
+func (c *Client) Label(lease, text string) (LeaseChange, error) {
+	return c.LabelContext(context.Background(), lease, text)
+}
+
+// LabelContext uses ctx only for this operation.
+func (c *Client) LabelContext(ctx context.Context, lease, text string) (LeaseChange, error) {
+	if err := ctx.Err(); err != nil {
+		return LeaseChange{}, err
+	}
+	reply, err := c.leases(ctx, 0).Label(lease, text)
+	if err != nil {
+		return LeaseChange{}, err
+	}
+	if err := callResultError("Label", reply.Outcome); err != nil {
 		return LeaseChange{}, err
 	}
 	return *reply.Change, nil
@@ -119,7 +152,7 @@ func (c *Client) Observe(ctx context.Context, cursor string, wait time.Duration)
 	if err != nil {
 		return YieldPage{}, err
 	}
-	if err := callResultError("Observe", reply.Outcome, reply.Page != nil); err != nil {
+	if err := callResultError("Observe", reply.Outcome); err != nil {
 		return YieldPage{}, err
 	}
 	return *reply.Page, nil
@@ -135,7 +168,7 @@ func (c *Client) Answer(ctx context.Context, request string, answer YieldAnswer,
 	if err != nil {
 		return AnswerResult{}, err
 	}
-	if err := callResultError("Answer", reply.Outcome, reply.Answer != nil); err != nil {
+	if err := callResultError("Answer", reply.Outcome); err != nil {
 		return AnswerResult{}, err
 	}
 	return *reply.Answer, nil
@@ -144,9 +177,17 @@ func (c *Client) Answer(ctx context.Context, request string, answer YieldAnswer,
 // leases binds one lease call, widening the transport's own waiting limit to
 // the wait the call was given.
 func (c *Client) leases(ctx context.Context, budget time.Duration) *wire.LeasesClient {
+	if c.initErr != nil {
+		return wire.NewLeasesClient(endpointFailure{c.initErr})
+	}
 	transport := c.transport
 	if budget > transport.Timeout {
 		transport.Timeout = budget
 	}
 	return wire.NewLeasesClient(transport.WithContext(ctx))
 }
+
+type endpointFailure struct{ err error }
+
+func (f endpointFailure) ExchangeFrame([]byte) ([]byte, error) { return nil, f.err }
+func (f endpointFailure) WriteFrame([]byte) error              { return f.err }

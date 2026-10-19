@@ -17,17 +17,25 @@ import (
 // Amount is what the ask actually freed, which the instrument measured;
 // Requested is what the holder had been granted or what the asker asked for.
 // A record with an empty Holder is about the asker alone.
+//
+// Three events are the person's Memory record (CONTRACT.md RES-L10): label
+// (a holder named what its lease holds), freed (a yield the instrument
+// confirmed, written when the Acquire that caused it ends, with the lease the
+// asker got in AskerLease) and foreign (an Acquire that ended insufficient or
+// holders_refused while the largest memory no lease covers was Holder's).
 type auditRecord struct {
-	At        string `json:"at"`
-	Event     string `json:"event"`
-	Asker     string `json:"asker,omitempty"`
-	Holder    string `json:"holder,omitempty"`
-	Lease     string `json:"lease,omitempty"`
-	Resource  string `json:"resource,omitempty"`
-	Amount    int64  `json:"amount"`
-	Requested int64  `json:"requested,omitempty"`
-	Answer    string `json:"answer,omitempty"`
-	TookMS    int64  `json:"took_ms"`
+	At         string `json:"at"`
+	Event      string `json:"event"`
+	Asker      string `json:"asker,omitempty"`
+	AskerLease string `json:"asker_lease,omitempty"`
+	Holder     string `json:"holder,omitempty"`
+	Lease      string `json:"lease,omitempty"`
+	Label      string `json:"label,omitempty"`
+	Resource   string `json:"resource,omitempty"`
+	Amount     int64  `json:"amount"`
+	Requested  int64  `json:"requested,omitempty"`
+	Answer     string `json:"answer,omitempty"`
+	TookMS     int64  `json:"took_ms"`
 }
 
 // MaxAudit is the size at which the audit rolls over to one previous file. The

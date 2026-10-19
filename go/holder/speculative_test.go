@@ -195,7 +195,7 @@ func (o *joinedOwned) Ready(ctx context.Context) error {
 func TestASpeculativeLoadRealWorkWaitsOnIsNotCancelled(t *testing.T) {
 	leases := &freeLeases{testLeases: &testLeases{}, outcome: res.AcquireFreeOutcomeAcquired}
 	var active sync.Map
-	h, err := New(Options{Leases: leases, Resource: "card:0", Idle: time.Hour,
+	h, err := New(Options{Leases: leases, Resource: "card:0", Idle: time.Hour, YieldWait: 100 * time.Millisecond,
 		Active: func(name string) bool { _, ok := active.Load(name); return ok }})
 	if err != nil {
 		t.Fatal(err)

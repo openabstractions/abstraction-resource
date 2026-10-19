@@ -1,0 +1,16 @@
+# A 24 GiB discrete card in a 64 GiB machine. The card is its own pool: a
+# 40 GiB request cannot fit however many holders yield, so it is refused
+# before anybody is asked, and an engine reporting 96 GiB changes nothing.
+measure memory capacity=64GiB
+measure card:0 capacity=24GiB
+engine card:0 server:lmstudio 96GiB
+permit comfyui
+acquire comfyui card:0 40GiB wait=200
+nowait comfyui card:0 40GiB
+acquire comfyui card:0 20GiB
+table card:0
+
+# expect 5: insufficient asked=none [RES-L2]
+# expect 6: insufficient [RES-L2]
+# expect 7: acquired asked=none [RES-L2]
+# expect 8: ok capacity=24GiB held=0 ... [RES-T1]

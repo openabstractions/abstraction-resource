@@ -4,6 +4,8 @@ package client
 
 import (
 	"context"
+	"fmt"
+	"github.com/openabstractions/abstraction-facade/go-core/bootstrap"
 	"os"
 	"time"
 
@@ -14,24 +16,49 @@ import (
 // EnvEndpoint names the endpoint for a caller that resolves nothing.
 const EnvEndpoint = "ABSTRACTION_RESOURCE_ENDPOINT"
 
-type Client struct{ transport listen.FrameClient }
-
-func DefaultEndpoint() string {
-	if s := os.Getenv(EnvEndpoint); s != "" {
-		return s
-	}
-	return listen.Endpoint("resource-table-v1")
+type Client struct {
+	transport listen.FrameClient
+	initErr   error
 }
 
-func Discover() *Client { return New(DefaultEndpoint()) }
+// DefaultEndpoint returns empty when the account namespace cannot be resolved.
+func DefaultEndpoint() string { endpoint, _ := checkedDefaultEndpoint(); return endpoint }
+func checkedDefaultEndpoint() (string, error) {
+	if endpoint := os.Getenv(EnvEndpoint); endpoint != "" {
+		return endpoint, nil
+	}
+	return bootstrap.InstalledEndpoint("resource-table-v1")
+}
+func emptyEndpointError() error {
+	_, err := checkedDefaultEndpoint()
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("resource: empty endpoint")
+}
+
+func Discover() *Client {
+	endpoint, err := checkedDefaultEndpoint()
+	c := New(endpoint)
+	c.initErr = err
+	return c
+}
 
 func New(endpoint string) *Client {
-	return NewWithTransport(listen.FrameClient{Endpoint: endpoint})
+	c := NewWithTransport(listen.FrameClient{Endpoint: endpoint})
+	if endpoint == "" {
+		c.initErr = emptyEndpointError()
+	}
+	return c
 }
 
 // NewWithTransport retains the caller's endpoint, server trust and waiting limits.
 func NewWithTransport(transport listen.FrameClient) *Client {
-	return &Client{transport: transport.WithDefaults(10*time.Second, 1<<20)}
+	c := &Client{transport: transport.WithDefaults(10*time.Second, 1<<20)}
+	if transport.Endpoint == "" && transport.Dialer == nil {
+		c.initErr = emptyEndpointError()
+	}
+	return c
 }
 
 // Resources are the resources this machine's table can report.
@@ -41,6 +68,9 @@ func (c *Client) Resources() (ResourceList, error) {
 
 // ResourcesContext uses ctx only for this operation.
 func (c *Client) ResourcesContext(ctx context.Context) (ResourceList, error) {
+	if c.initErr != nil {
+		return ResourceList{}, c.initErr
+	}
 	if err := ctx.Err(); err != nil {
 		return ResourceList{}, err
 	}
@@ -48,7 +78,7 @@ func (c *Client) ResourcesContext(ctx context.Context) (ResourceList, error) {
 	if err != nil {
 		return ResourceList{}, err
 	}
-	if err := callResultError("Resources", reply.Outcome, reply.List != nil); err != nil {
+	if err := callResultError("Resources", reply.Outcome); err != nil {
 		return ResourceList{}, err
 	}
 	return *reply.List, nil
@@ -62,6 +92,9 @@ func (c *Client) Holders(resource string, fresh bool) (ResourceState, error) {
 
 // HoldersContext uses ctx only for this operation.
 func (c *Client) HoldersContext(ctx context.Context, resource string, fresh bool) (ResourceState, error) {
+	if c.initErr != nil {
+		return ResourceState{}, c.initErr
+	}
 	if err := ctx.Err(); err != nil {
 		return ResourceState{}, err
 	}
@@ -69,21 +102,19 @@ func (c *Client) HoldersContext(ctx context.Context, resource string, fresh bool
 	if err != nil {
 		return ResourceState{}, err
 	}
-	if err := callResultError("Holders", reply.Outcome, reply.State != nil); err != nil {
+	if err := callResultError("Holders", reply.Outcome); err != nil {
 		return ResourceState{}, err
 	}
 	return *reply.State, nil
 }
 
-// callResultError preserves typed non-success replies through the compact Go
-// client API, and refuses a reply that violates the outcome/payload invariant.
-func callResultError(operation string, outcome wire.ResourceCallOutcome, payload bool) error {
-	if outcome == wire.ResourceCallOutcomeOk && payload {
+// callResultError maps a generated validated reply into the compact API.
+// Outcome/payload postconditions belong to the generated service client.
+func callResultError(operation string, outcome wire.ResourceCallOutcome) error {
+	if outcome == wire.ResourceCallOutcomeOk {
 		return nil
 	}
-	if outcome == wire.ResourceCallOutcomeOk || payload || !outcome.Known() {
-		return &wire.ServiceError{Code: wire.ServiceErrorCodeInvalidResult, Message: operation + " outcome/payload mismatch"}
-	}
+
 	code := wire.ServiceErrorCode(outcome.String())
 	switch outcome {
 	case wire.ResourceCallOutcomeUnavailable:

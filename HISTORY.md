@@ -311,3 +311,45 @@ when the resources close. Tests: `go/holder/standing_outage_test.go` (one
 outage then a decision keeps the component loaded; an outage through a
 whole lifetime unloads it; fails with the old answer) and the outage test in
 `go/service/awake_revoke_test.go` (no renew_by moves during the outage).
+
+## 0.8.0 contract truth pass (W0-04), 2026-10-21
+
+Each changed or reviewed statement with its class: an outdated rule is text the code has passed, a code defect is code or IDL that breaks a rule and becomes a TODO row, an accepted divergence is recorded under Divergences.
+
+| statement | class | action |
+| --- | --- | --- |
+| RES-T2: whose instruments | outdated rule | the instruments are the service's own |
+| RES-T3: what a registered provider contributes | outdated rule | claimed rows only |
+| A `table@1` reply's machine (audit P2-1) | new rule | RES-T6; its facade test is under Not built |
+| Not built: GPU faults have one consumer | outdated rule | the model host, `lemonaded` and `pytorchd` attach a Guard |
+| README: RES-L1 to RES-L5, tags `go/v0.1.x` | outdated rule | rule ranges and module tag text corrected |
+| Endpoint `resource-table-v1` serves the writing half (M3) | outdated rule | stated under Not built; the rename waits for the 0.8.0 wire renames |
+| RES-A1 contradicts itself, and its ExecutionRequired claim | code-defect drift | text unchanged; TODO row handed to W1-05 |
+| `serve/runtime_resources.go` cites agent-history | code defect | TODO row (serve) |
+
+## 2026-11-12: stock engines are measured, integrated apps hold leases
+
+The owner decided that an app running OA's integration has opted in to OA's
+resource management by joining, and that an app without it is only
+measured. The service no longer yields stock engines on their behalf: the
+router's four stock-engine unload adapters are removed, and the composition
+writes no yield rule for them. The rule `abstraction.resource/yield` on
+`server:<name>` stays as the person's switch for one integrated app's lease
+(RES-L3). A verified row the lease book credits to a lease now carries its
+id, so a row with no `lease` is foreign memory (RES-T1), and a load that
+foreign memory blocks is refused naming its program (RES-L9). The busy
+refusal reason `component has an active request` became a contract rule for
+holders and askers (RES-L3).
+
+## 2026-11-12: the per-app switch is enforced; labels and the Memory record
+
+Architect rulings 2 and 3, owner-approved. The lease book now decides
+`abstraction.resource/yield` on each holder's own program before it plans
+an eviction. The rule names the program the lease names; `host:<name>` is
+gone, and installation writes no yield rule. Only the person's evaluated
+deny keeps an app's memory; no rule and an outage ask as before (RES-L3).
+`leases@1` gained `Label` for a holder's own lease, display only, and the
+audit gained the `label`, `freed` and `foreign` records the Panel's Memory
+view reads (RES-L10). The app whose load foreign memory blocks reads a
+sentence naming no other program; the provider's log keeps the one that
+does.

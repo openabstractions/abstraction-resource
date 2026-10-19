@@ -64,7 +64,7 @@ func TestBindProcessRealLinuxChildOverIPC(t *testing.T) {
 	in := &fake{name: instrument.NameLinuxFdinfo, offers: []string{instrument.Card0},
 		at: time.Now(), cap: 8 * gib}
 	table := NewTable(in, nil, time.Nanosecond)
-	book, err := OpenBook(BookOptions{Table: table})
+	book, err := OpenBook(BookOptions{Table: table, Hold: permitGate})
 	if err != nil {
 		t.Fatal(err)
 	}

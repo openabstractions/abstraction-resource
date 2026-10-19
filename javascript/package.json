@@ -20,5 +20,6 @@
   ],
   "engines": {
     "node": ">=18"
-  }
+  },
+  "dependencies": { "@openabstractions/rights": "0.0.0" }
 }

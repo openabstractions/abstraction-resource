@@ -1,5 +1,12 @@
 # abstraction.resource contract
 
+Remote profile: the current service methods retain `local` (explicit or
+default); the general paired listener does not offer this capability. Retained
+capability-specific delegation keeps its existing contract and is separate
+from that listener. Held by: `idl/gen/service_test.go`
+(`TestDispatcherTableCarriesRemoteProfile`) and `serve/runtime_remote_test.go`
+(`TestRemoteRuntimeDescribeUsesLiveGrantAndExplicitServices`).
+
 Binds: `resource.thrift`
 
 `resource.thrift` defines `abstraction.resource/table@1`, the read-only table
@@ -12,6 +19,8 @@ card is system memory. [README.md](README.md) holds the walkthrough: reading
 the table and taking a lease.
 
 ## Reading this page
+
+The conventions every OA contract carries are stated once in [CONVENTIONS.md](https://github.com/openabstractions/abstractions/blob/main/idl/CONVENTIONS.md); a rule here that applies one cites its `CONV-` id.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
 "SHOULD NOT", "RECOMMENDED", "MAY" and "OPTIONAL" in this page are to be
@@ -50,27 +59,40 @@ the right until the release named ships (`research/vocabulary/RENAME-PLAN.md`
 **[RES-T1] Attribution.** `Holders` MUST report every hold the instrument
 sees, attributed to a program and account through the same evidence rights
 uses. A row the platform cannot attribute MUST keep its process image and an
-empty account rather than inventing one; `held` MUST sum verified rows only.
+empty account rather than inventing one; `held` MUST sum [verified rows](https://openabstractions.github.io/reference.html#concept-resource.measurement-evidence) only.
 
 One program holding a resource in two processes is two rows: two loaded
 models were two `llama-server` processes of one image path, two rows that
 moved independently. A reader that folds two hold rows into one program
 loses which hold is which.
 
-A claimed row whose holder is an attached HTTP engine names it
-`server:<name>` with an empty account: such a holder has a base URL and no
-image, so there is no absolute path to give it and no account to read, and
-inventing one would break the first paragraph.
+A claimed row whose holder is an HTTP engine a server adapter reads names
+it `server:<name>` with an empty account: such a holder has a base URL and
+no image, so there is no absolute path to give it and no account to read,
+and inventing one would break the first paragraph.
 
-**[RES-T2] Instruments.** On Windows the instrument MUST read `\GPU Process
+A verified row whose bytes the lease book credits to a live lease (RES-L2)
+MUST carry that lease's id in `lease`. A verified row with an empty `lease`
+is foreign memory: a program holding the resource under no lease, which the
+service measures and never asks to yield (RES-L3).
+
+**[RES-T2] Instruments.** The instruments MUST be the service's own: the
+service alone measures. On Windows the instrument MUST read `\GPU Process
 Memory(*)\Total Committed` per process, summed over the adapter LUIDs it
-touches. On Linux the instrument MUST read `/proc/<pid>/fdinfo`: each
+touches, and MUST read `card:0`'s capacity from DXGI's adapter description:
+the largest hardware adapter's `DedicatedVideoMemory`,
+`DedicatedSystemMemory` and `SharedSystemMemory` together, the memory the
+operating system lets that adapter map. On the owner's Radeon 8060S (128 GiB
+installed, 123.6 GiB visible to Windows) that is 3.83 GiB dedicated plus
+98.92 GiB shared, 102.7 GiB; the table had read the card as unknown. On Linux the instrument MUST read `/proc/<pid>/fdinfo`: each
 process's `drm-resident-<region>` MUST be summed after its fds are
 deduplicated by `drm-client-id`, one row per `drm-pdev`, numbered `card:<n>`
 in `drm-pdev` order; a second region carried in `detail` is a second figure
-beside the first, `vram` and `gtt` being amdgpu's own names for it. Where
-neither instrument exists, `instrument` MUST read `none` and every row MUST
-be claimed.
+beside the first, `vram` and `gtt` being amdgpu's own names for it. On
+macOS with a Metal device `instrument` MUST read `metal-working-set`: it
+measures `card:0`'s capacity (RES-L2) and no holder, so every row MUST be
+claimed. Where no instrument exists, `instrument` MUST read `none` and every
+row MUST be claimed.
 
 A row below a declared size threshold (256 MiB on the Windows instrument)
 MUST be left out, because every process on a shared-memory machine holds a
@@ -82,7 +104,9 @@ receives the last sample while it is inside the service's age bound.
 written, so a reader can tell how old the answer is.
 
 **[RES-T3] Claims.** A claimed row MUST come from a server adapter's own
-model list, from a holder's `detail`, or from the lease book. A claimed
+model list, from a holder's `detail`, or from the lease book. A provider
+registered with the service MUST contribute claimed rows only; a verified
+row comes from the service's own instrument (RES-T2). A claimed
 row's amount is 0 unless the row is a lease, in which case it is the grant
 the service wrote; the adapter's size estimate goes in `detail` instead. A
 server that is not answering MUST claim nothing: its last model list is not
@@ -121,12 +145,37 @@ measured are the same hold seen twice, once by the server and once by the
 counter. `held` MUST be the only total the service computes, and MUST be the
 verified rows alone.
 
-## Leases
+**[RES-T6] A table describes the answering machine.** A `table@1` reply
+MUST describe the machine of the runtime that answered it. A reader that
+resolves a remote runtime's table receives that runtime's `Resources()`
+and rows, and MUST NOT merge them with another machine's. A lease is taken
+only on the runtime of the machine whose resource it holds: the router
+selects a remote server, and the remote provider takes its own lease there.
+The facade test that resolves a second runtime's table is under
+[Not built](#not-built).
+
+## [Leases](https://openabstractions.github.io/reference.html#concept-resource.leases)
 
 **[RES-L1] Admission.** `Acquire` MUST decide `abstraction.resource/hold` on
 the resource for the bound caller before reading the table. A program with
 no rule MUST read `not_permitted`; a decision point that cannot answer MUST
 read `unavailable`, never a permit.
+
+The additive `AcquireFor(subject, resource, amount, wait_ms)` uses the same
+admission rule for an authenticated job owner asserted by an explicitly
+designated native enforcer. The receiver MUST require the enforcer and the
+subject to belong to its owning account and MUST recheck the native caller.
+The serialized Rights Subject carries no proof. A normal application cannot
+assert another owner; the installed runtime designates only its own download
+runner process for `hold` on `awake`. That runner takes the original
+account/program from the operation's private authenticated journal. Script-host
+rules retain their existing subject and default-exclusion semantics.
+
+The Book records the original owner. It privately retains the acquiring native
+controller, which may renew/release only its own delegated leases through the
+unchanged methods while its designation remains valid. Permission rechecks,
+revocation and expiry are decided for the original owner. No implicit grant is
+made, and a missing authenticated owner never becomes the runtime's subject.
 
 **[RES-L2] Order, arbitration and outcome.** A request larger than the pool
 MUST read `insufficient` before any holder is asked; a machine with no pool
@@ -134,9 +183,9 @@ MUST never read it. A request no larger than what is free MUST be `acquired`
 with an empty `asked`: the service arbitrates scarcity and sends no yield
 request where there is none.
 
-Otherwise the service MUST send holders a yield request in this order:
-attached holders idle longest first, then leases oldest `since` first, then
-it stops. Each yield request MUST be recorded in `asked` with its answer and
+Otherwise the service MUST plan the eviction before it asks anybody
+(RES-L9) and send holders a yield request in this order: the planned
+leases oldest `since` first, then it stops. Each yield request MUST be recorded in `asked` with its answer and
 time. `holders_refused` MUST be read when the yield requests did not free
 `amount`; the asker allocated nothing.
 
@@ -172,25 +221,106 @@ give no process creation identity for that measured instance, so that
 instrument does not credit child bytes to leases. The public holder table
 does not disclose process IDs or creation identities. When measured use
 exceeds the admitted estimate, the full measured amount remains charged.
-On Windows, the same child's use can therefore appear in both the PDH global
-measurement and its full reservation, conservatively reducing reported free
-space. Credit requires a generation-bound child measurement and a proven way
-to reconcile its amount with the global PDH charge. A live process handle
-around a PID-only PDH collection does not itself identify that row's process
-generation.
 
-The pool MUST be the instrument's `capacity` where it has one. Where the
-instrument reports none — a shared-memory adapter whose segment is carved
-from system RAM — the service MUST read the machine's own memory as the
-pool for `card:<n>` and `memory`, which is what the 2026-09-22 measurement
-found that segment to come from. `capacity` in the table stays what the
-instrument measured; a machine that will say neither has no pool, and a
-request there MUST ask its holders.
+On Windows the instrument binds a child through a measurement of that exact
+process instead (`instrument.ChildUsage`): it holds a handle on the bound
+child, which keeps its PID from reuse, checks the child's creation time
+against the bound identity, reads `D3DKMTQueryVideoMemoryInfo`'s
+`CurrentUsage` for both memory segment groups on every adapter
+`D3DKMTEnumAdapters2` lists, and checks the child still runs. A failed
+query, linked physical adapters, a changed identity or an exit withholds
+the whole figure. With a figure `x` for the child and the PDH row `y` of
+its PID, the book leaves `y` charged, adds `max(0, x - y)` to what is held,
+credits `x` once to the lease's subject, and gives the PDH row no ordinary
+program credit. The global charge is then at least the larger figure, and
+the engine's occupancy counts once instead of as its PDH row and its full
+reservation. Before this, a loaded chat model took twice its size from the
+owner's card and no picture model fit beside it. A PDH row alone still
+proves no process generation and credits nothing by its PID.
 
-Idleness MUST be the time since a holder's own list of what it holds last
-changed: it is the only idleness a table can see, no server on this machine
-reports when it was last used, and a server that has held the same model
-untouched longest is the one asked first.
+The engine of a Windows binding is the bound child and each of its direct
+children that the instrument shows holding the resource, runs as the
+lease's account, started no earlier than the bound child, and runs an image
+inside the engine's folder. The engine's folder is the bound image's
+folder, or, for a venv launcher in a folder beside `pyvenv.cfg`, the folder
+holding the venv. An engine whose folder would be a volume root has none,
+and only its bound child is its own. The book measures each engine process as it measures the
+bound child. When the measurement fails while the book's fresh inspection
+still finds that process generation at the PID, the PDH row of that PID
+credits the lease's subject, and the engine is charged as its lease or its
+rows, whichever is larger, never both. A PID whose process is gone or
+changed keeps the full reservation beside its row. The OA PyTorch engine
+binds its venv launcher, and the interpreter the launcher starts holds the
+model; before this, that interpreter's memory was charged as foreign use
+beside the engine's full lease.
+
+A generation-bearing Linux sample below a bound process may credit that
+ancestor's lease group when every observed parent edge has the same account
+and boot identity, nonzero strictly ordered start ticks, and unchanged native
+identities and parent links on reverse reinspection. The bound ancestor must
+still match its lease's saved process creation identity. A bounded walk credits each sample
+once: an exact direct binding keeps its owner; otherwise all proven bound
+ancestors must name one subject. Conflicting subjects, unavailable or reused
+identities, equal ticks, cycles or the private depth limit provide no additional
+ancestry credit; existing matching program/account credit remains unchanged.
+This reconciliation leaves every globally measured byte charged
+and changes no binding authority or public holder row. Unsupported instruments
+retain the conservative behavior above.
+
+**Capacity is one figure.** `capacity` in `Holders` MUST be the pool the
+book admits against, by the rule below, so every reader of this machine's
+memory (the lease book, the model catalogue's fit rule, the runtime's
+context plan, a provider reading the table over the wire, the Panel) takes
+one figure and computes none of its own. `capacity` MUST NOT read 0 for
+`card:<n>` or `memory` where the machine states its memory.
+
+Capacity MUST come from the service's own instrument and from the machine's
+own memory figure. A claimed row, a server's survey, a holder's `detail` and an
+engine's own report of free or total memory MUST NOT set `capacity` or the
+pool: the 2026-09-05 measurement saw `hipMemGetInfo` and ComfyUI's
+`/system_stats` report 78.0 of 78.19 GiB free while `llama-server` held
+22.8 GB.
+
+The pool MUST be the instrument's `capacity` where it has one. The
+instrument declares which resource each resource's bytes are carved from;
+resources carved from one resource are one pool. A lease on any of them
+MUST count against a request for any other, and the yield requests of such
+a request MUST include those leases, each asked about its own resource.
+Only leases are counted across the pool: measured holds are counted per
+resource, so bytes the instrument measures on a sibling resource do not
+reduce a request's free.
+Where the pool's resource reports no capacity and that resource is
+`memory`, the service MUST read the machine's physical memory as `memory`'s
+pool, which is what the 2026-09-22 measurement found a shared-memory
+adapter's segment to come from. A card carved from such memory with no
+figure of its own MUST read that memory less the system's reserve: an
+eighth of memory and at least 4 GiB, and half of memory below 8 GiB. A
+resource that is its own pool and has no capacity has no pool, and a
+request there MUST ask its holders. A card the instrument cannot read
+at all (a basic display adapter, a virtual machine's) MUST read as carved
+from `memory`. An acquire there answers `unavailable` while the card cannot
+be read; Fit reads the pool.
+
+The reading comes from the per-user service's own interactive session:
+the Windows GPU counters are unreadable from session 0, which is one reason
+the service runs per user. The service MUST NOT read the WDDM per-process
+video memory budget (`QueryVideoMemoryInfo`) as capacity: that budget is
+the operating system's figure for one process, it moves under pressure, and
+the service holds no adapter. The adapter description DXGI states is
+the operating system's fixed figure for the adapter and is read instead.
+Every instrument in this release declares
+each `card:<n>` carved from `memory`. On macOS with a Metal device,
+`card:0`'s capacity MUST be the device's recommended working-set size
+(`MTLDevice.recommendedMaxWorkingSetSize`), the system's own figure for the
+memory Metal keeps resident: the first device that is neither low-power nor
+removable, which is the discrete card on an Intel Mac. That instrument is
+`metal-working-set` and measures no holds (RES-T2). The Windows instrument
+reports the adapter's DXGI figure. The Linux instrument and `none` report
+no adapter capacity, so a card there reads memory less the reserve. On
+every platform card and memory leases count against each other.
+The instrument named `fixed` reports the capacities its owner sets; tests
+and the conformance driver measure through it, and a running service never
+does.
 
 An answer in `asked` MUST be `yielded`, `refused` or `unanswered`. A refusal
 MUST carry its reason after `": "`, whether the reason is the server's own
@@ -199,36 +329,56 @@ words or the rule that refused.
 `wait_ms` (0..120000) MUST be clamped to the call's own connection deadline;
 the service raises that deadline to `MaxAcquireWait` plus its own margin
 whenever the lease book is served, so a wait the contract allows is never
-cut by a shorter transport budget. Two attached holders asked in sequence,
-each taking the full settle, both receive an answer inside that deadline
-rather than one answer and a budget cut.
+cut by a shorter transport budget. Two holders asked in sequence, each
+taking the full settle, both receive an answer inside that deadline.
 
-**[RES-L3] Yield.** A lease holder yields through `Answer`; an attached
-holder yields on its behalf through its server's own unload. Either way, the
-answer is what the instrument shows afterwards: a lease holder's `yielded`
-MUST be confirmed against the instrument before the asker is told, and an
-attached holder's confirmation MUST be the same instrument check run on its
-behalf.
+**[RES-L3] Yield.** A lease holder yields through `Answer`. Its `yielded`
+MUST be confirmed against the instrument before the asker is told.
 
 Each `YieldRequest` MUST name the lease being asked back. A lease holder's
 `yielded` answer MUST concern that lease; freeing a different lease of the
 same resource does not answer the request. The holder MAY release its lease
 after freeing the resource and before answering; the book ends any still-live
-named lease after it confirms the instrument's fall. A holder serving an
-active operation MAY answer `refused` with its reason.
+named lease after it confirms the instrument's fall. A yield MUST NOT stop
+a component while a request uses it: the provider kit's holder waits for a
+moment no request uses the component, then stops it and answers `yielded`.
+A request uses a component from its admission until its call returns; a
+reply kept afterwards only for observation does not use it. A holder that
+counts its requests in flight (`Options.InFlight`) holds back each new
+admission while the yield waits (`Holder.Pass`), so the component yields at
+its next request boundary, and the held-back request then loads it again
+at the size that fits (RES-L9). A holder busy with a request MUST answer
+`refused` with exactly the reason `component has an active request`, and an
+asker MUST treat that reason as "ask again later". The provider kit's holder
+gives that answer to a request still running after its bound (`YieldWait`,
+half the holder's acquire wait by default). The provider kit's acquire asks
+again, up to ten more times while its caller waits, when every refusal it
+received is that one, so a long turn delays a load that needs its bytes and
+does not fail it. Each request is answered on its own, so a wait on one
+component delays no other.
 
-Whether an attached holder may be yielded MUST be decided by the rule
-`abstraction.resource/yield` on `server:<name>`, decided for the program
-that would do the unloading. The holder proves nothing to this service and
-answers no lease call, so the rule about its models is a rule about that
-server, held by the service. A composition that serves leases writes one
-permit rule per server it has a mechanism for; denying one is how a person
-says an engine is not to be touched, and the refusal reaches `asked` naming
-that server.
+An integrated app, one that runs OA's integration, joins as a lease holder.
+The rule `abstraction.resource/yield` on the holder's program is the
+person's switch for that app's leases. Its resource is the subject the lease
+names: an absolute image path or a package family. The service MUST decide
+it for its own program before it plans or asks, once per holder program in
+each `Acquire`. Only an evaluated deny keeps the app's memory: the service
+MUST NOT ask that holder, and `asked` records it as
+`refused: the person keeps <Program>'s memory`. The plan then covers the
+shortfall from the other leases, and when they cannot, nobody is asked and
+the asker reads `holders_refused`. No rule, and an outcome the rights
+service cannot give, ask the holder as before: the switch is on by default and the
+composition writes no rule for it. An asker's own leases are its own to ask
+back, and the switch never keeps them.
 
-A yield frees the bytes the resource's total falls by, not one row's: an
-attached holder is an HTTP engine whose weights live in whatever processes
-it spawned, and no row of the table is that engine.
+An app without OA's integration, such as a stock model server, is measured
+as foreign memory (RES-T1) and never driven: the service sends it nothing
+and asks nobody on its behalf. A load that foreign memory blocks reads
+`insufficient`, and the provider kit's refusal names the program holding
+the most of it (RES-L9).
+
+A yield frees the bytes the resource's total falls by: a holder's engine
+can run in processes no row credits to its lease.
 
 Confirmation MUST be bounded below by the instrument's own floor. The
 Windows instrument lists no process under its 256 MiB threshold (RES-T2), so
@@ -293,10 +443,10 @@ decision and the grant, so a concurrent `Acquire` either takes the bytes
 first and this reads `held`, or this grants first and that one finds them
 spent.
 
-While any `Acquire` of the same resource is in its ask loop, `AcquireFree`
+While any `Acquire` of a resource in the same pool is in its ask loop, `AcquireFree`
 MUST read `held`, even when the request fits what is free. The bytes a
 yield frees belong to the acquire that asked for them, and the lowest
-standing never takes them. The book counts, per resource and under its
+standing never takes them. The book counts, per pool and under its
 lock, the `Acquire` calls that found nothing free and are asking, from the
 first ask until that call returns.
 
@@ -331,10 +481,112 @@ resource, a card and `awake` alike (abstraction-rights RIGHTS-R23):
   audit answer, and a decision that cannot be obtained ends nothing there
   (`Book.Recheck`).
 
+The additive Go `Book.RecheckChecked` reports unavailable decisions to checked
+rights-change composition while preserving their leases. The published void
+`Recheck` and its periodic outage behavior remain compatible. Cancellation
+and per-pass deadline expiry are not refusal decisions.
+
 A connection-owned hold is ended by the service that owns its connection.
 The provider kit's holder reads a refused renewal as an ended lease and unloads
 the component that used it. The holder's next acquire is decided, and asked,
 as a first one is.
+
+**[RES-L8] A waiting acquire names its holder.** Resource registers the
+family `card` in job's waiting-word catalogue (abstraction-job JOB-A15).
+While an `Acquire` of a card waits on a yield request, the service MUST
+record `card:held_by:<program>` for that asker and pool, naming the holder
+asked last: a lease's program as the table names it, verified or claimed.
+`<program>` is formed from that name:
+
+- an image path gives its base name, with Windows' `.exe` removed;
+- a package family, with or without `msix:`, gives its package name
+  without the publisher id.
+
+It is lowercased, each character outside `[a-z0-9_.-]` is written `_`, and
+it is cut so the word stays within 64 bytes. The word is set when a yield
+request goes out. It stays while any `Acquire` of that asker on that pool
+waits and is removed when the last one returns, so a release clears it
+with the grant that follows, with no timer. It asks nobody a question and
+sends no notification. The service reads the word in process
+(`Book.Waiting`); its wire read and its relay to jobs and clients are under
+[Not built](#not-built).
+
+**[RES-L9] A load leases what it uses, at the largest size that fits.**
+An engine whose memory depends on a size it chooses (a chat engine's
+context) MUST lease what that load uses: its weights and the KV cache of
+its context in every resident slot, with its startup buffers. A component
+that can run at more than one size names them largest first
+(`holder.Component.Smaller`). The holder MUST try each through the
+no-yield acquire (RES-L6) and start the largest it is granted; only when
+none fits does it `Acquire` the smallest, asking holders to yield as
+RES-L2 orders. The engine then reports the size it loaded, never the size
+it planned (modelhost MODELHOST-H10).
+
+This is how a holder yields by shrinking. A larger load that does not fit
+beside a resident one asks it to yield; the resident one yields once its
+running request ends (RES-L3), and its next load takes the largest size
+that fits beside the new holder. The yield never fails the asker for a
+running request, and the shrunken holder keeps serving. A chat engine
+first gives up resident conversation slots at its planned context, and
+only then a smaller context. A holder grows back on its next load after
+the other holder leaves.
+
+A load that does not fit MUST unload only what makes it fit. Before any
+yield request, the service plans the eviction: the smallest set of live
+leases on the pool, the asker's own other leases among them, whose grants
+cover what is short. A lease counts its grant, the least its yield frees.
+When even every lease yielding leaves the load short, the service asks
+nobody and the asker reads `insufficient` at once: nothing is unloaded for
+a load that would fail anyway. The provider kit refuses that load
+`lease:insufficient`. When the table shows foreign memory (RES-T1), the
+provider's log names the program holding the most of it, by its file name
+without `.exe`, in this shape: "<Program> holds 20 GB that OpenAbstractions
+doesn't manage. Unload it in <Program>, or close <Program>." The app that
+asked reads the generic sentence of RES-L10. Otherwise the log says that not
+enough memory exists for the model even after unloading every model that
+could make room. Idle components give way at once and a component in use gives
+way at its next request boundary (RES-L3); the idle time only cleans up
+what no load has needed. Within one provider the same rule swaps models: a
+load asks its provider's own idle model to yield like any other lease.
+
+**[RES-L10] Labels and the Memory record.** A holder MAY label its own
+lease with `Label`: the words a person reads for what the lease holds, as
+`<app>: <model>`. The text is one line of at most 200 bytes with no control
+or format character (bidirectional overrides among them) and no line or
+paragraph separator; empty clears it. A Memory line names a program with a
+registered title or signed description by that name whatever its label
+says, and takes a label's app part only for a program with neither, through
+the same check as a file description. A label is display only. It needs no rule
+beyond owning the lease, as `Renew` does, and carries no authority. A
+reader shows the holder's program name for a lease with no label. The
+provider kit's holder labels each lease when it is granted
+(`Options.Label`, `Holder.Label`); a provider that runs work the runtime
+forwards does not know the app that asked, and its label is the model
+alone.
+
+The lease audit is one JSON object per line. Three of its events are the
+person's Memory record, and their fields are these:
+
+- `label`: `at`, `lease`, `holder` (the lease's program) and `label`,
+  written when a label changes.
+- `freed`: `at`, `holder`, `lease` and `label` of the lease that yielded,
+  `asker`, `asker_lease` (the lease the asker got, absent when it got
+  none), `resource` and `amount` (the bytes the instrument confirmed),
+  one per confirmed yield, written when the `Acquire` that caused it ends.
+- `foreign`: `at`, `asker`, `holder` (the program holding the most memory
+  no lease covers, other than the asker), `resource` and `amount` (its
+  bytes), written when an `Acquire` ends `insufficient` or
+  `holders_refused` while the table shows such memory.
+
+An empty `label` is absent. Records also carry `amount` and `took_ms`
+where those are zero; a reader ignores fields it does not use.
+
+The app whose load foreign memory blocks reads "Not enough memory: another
+program holds memory OpenAbstractions doesn't manage." The provider kit's
+refusal carries it as `App` (`refusal.ForeignMemory`); the sentence naming
+the program and its size stays in the provider's log, because another
+program's holdings are what `abstraction.resource/table.read` guards
+(RES-T4).
 
 ## Wake lease
 
@@ -354,8 +606,9 @@ holder closes, exits or is killed, and a request-response profile carries
 one call under a bounded deadline, so a lease carried by such a call would
 end at that deadline while the holder was still connected
 (abstraction-rights CONTRACT.md, `go/awake_lease_test.go`). The service that
-owns the holder's connection keeps the request and writes the lease here;
-the lease is connection-owned under RES-L4.
+owns the holder's connection bridges the original program and account into
+the resource book and releases its lease when the connection ends. The book
+owns the platform request; the lease is connection-owned under RES-L4.
 
 The rule is `abstraction.resource/hold` on `awake`. The word `awake` that
 the rights service has always taken is an alias for that rule, read by the
@@ -378,7 +631,8 @@ platform wake request (Windows `PowerSetRequest` with
 `PowerRequestSystemRequired` and `PowerRequestDisplayRequired`; macOS
 `caffeinate -di`), and MUST release it once no such pair lives: the last
 wake lease released or expired, or the last card lease of its holder. A
-wake lease with no card lease beside it is recorded and takes no request.
+wake lease with no card lease beside it takes a system-required request
+(VISION 2026-10-02 (1)), released with the last such lease.
 The display is required because GPU work alone takes this lease and, on a
 Modern Standby machine, the display turning off is the standby entry: on
 2026-10-02 the Radeon 8060S machine entered standby on its display timeout
@@ -391,8 +645,9 @@ was held, and the holding process wrote a line every second for 12 minutes
 with no gap; the GPU is refused in standby (RES-G4). The display request
 also holds off the screen saver and the lock, which is why it lives only
 beside a card lease. No system setting changes. Other holds, a download's, require the system alone. The
-composition supplies the platform request (`BookOptions.KeepAwake`); a book
-without one records the lease and keeps nothing awake. A provider running
+composition supplies the card/display request (`BookOptions.KeepAwake`)
+and the non-card system request (`BookOptions.KeepSystemAwake`); a book
+without the respective hook records the lease and keeps nothing awake. A provider running
 GPU work takes its wake lease this way (RES-G5) and never calls the
 platform itself.
 
@@ -450,7 +705,7 @@ Application log's LiveKernelEvent about ten seconds later; none wrote a
 Display 4101.
 
 **[RES-G2] Every engine on the adapter is lost.** On a reset the provider
-MUST stop every component of every attached holder by that component's own
+MUST stop every component of every holder it runs by that component's own
 process handle, release its lease once the stop is confirmed, and report
 the engine with `engine:gpu-reset`. A component whose stop or release
 cannot be confirmed keeps its lease record, as an unload does. A load still
@@ -482,7 +737,15 @@ refuses the start and the grant goes back unused.
 
 **[RES-G5] Prevent.** While the machine is in or entering Modern Standby
 no new GPU load or GPU job MUST start; a load reads `gpu:standby`, and a
-queued job waits. While a GPU job runs the provider MUST hold the wake
+queued job waits. A Kernel-Power 506 begins standby for admission until its
+507, whether or not the machine sleeps, while the console display is off; a GPU
+job asks again before its first dispatch. A display that is on or dimmed
+(`GUID_CONSOLE_DISPLAY_STATE`, read through a power setting notification) is
+an awake machine, and a 506 with no 507 after it then admits the work with one
+log line: standby begins only after the display turns off. Each admission reads
+the display state again, and the same 506 refuses once the display is off. A display state that
+cannot be read admits the work with one log line. The refusal's sentence is
+"The computer is going to sleep; try again when it's awake." While a GPU job runs the provider MUST hold the wake
 lease (RES-A1), one for all its concurrent jobs. Each engine kind carries a
 dispatch row as data (`gpufault.DispatchFor`, which hands out copies): the
 environment it runs with,
@@ -518,7 +781,7 @@ RES-G5 and recovers through RES-G2..G4, whatever the delay.
 | `gpu:reset` | the failed request | Its engine was lost in a driver reset (RES-G3) |
 | `engine:gpu-reset` | the stopped engine | Why the holder stopped it (RES-G2) |
 | `gpu:resetting` | a refused load | The driver reset moments ago or the adapter is not listed again (RES-G4) |
-| `gpu:standby` | a refused load | The machine is in Modern Standby (RES-G5) |
+| `gpu:standby` | a refused load | The machine is in Modern Standby with its display off (RES-G5) |
 | `gpu:quarantined` | a refused request | An identical request reset the driver (RES-G3) |
 | `gpu:known-bad` | a refused request | Its shape reaches a value recorded as hanging the GPU (RES-G5) |
 
@@ -529,7 +792,7 @@ RES-G5 and recovers through RES-G2..G4, whatever the delay.
 | `table@1` | `Resources` | `ok` with the machine's resource names |
 | `table@1` | `Holders` | `ok` with the resource's rows, `capacity`, `held`, `observed`, `instrument`; `invalid` for an empty name, `unavailable` if the policy decision cannot answer |
 | `leases@1` | `Acquire` | `acquired`, `insufficient`, `holders_refused`, `not_permitted`, `unavailable`, `invalid`; `forbidden` is reserved for peer refusal and does not replace a hold-rights `not_permitted` |
-| `leases@1` | `Renew`/`Release` | `ok` with `applied` true or false and the lease if one still stands |
+| `leases@1` | `Renew`/`Release`/`Label` | `ok` with `applied` true or false and the lease if one still stands |
 | `leases@1` | `Observe` | `ok` with a page of `YieldRequest`s; `invalid` for a wait outside its bound |
 | `leases@1` | `Answer` | `ok` with `recorded` true or false; `invalid` for an unrecognized answer |
 | `leases@1` | `BindProcess` | `bound`, `unverifiable`, `refused`, `invalid`; `forbidden` and `unavailable` are reserved |
@@ -547,18 +810,29 @@ reason after `": "`) or `unanswered`.
 
 Table: a sample stands for up to its age bound (2 s) before `fresh` reads
 the instrument again; rows below 256 MiB (Windows instrument) are left out.
-Leases: `wait_ms` on `Acquire` is 0..120000, clamped to the connection's own
+[Leases](https://openabstractions.github.io/reference.html#concept-resource.leases): `wait_ms` on `Acquire` is 0..120000, clamped to the connection's own
 deadline, which the service raises to `MaxAcquireWait` (120 s) plus a
 ten-second margin whenever the lease book is served; `wait_ms` on `Observe`
 is 0..30000. A lease not renewed within its lifetime (30 s by default) ends;
-an attached holder's yield is confirmed within the settle bound (16 s by
-default) before it reads `unanswered`. GPU faults: a reset record settles
+a holder's yield is confirmed within the settle bound (16 s by default)
+before it reads `unanswered`. GPU faults: a reset record settles
 for 10 s before a probe; an engine exit within 30 s of a reset record is the
 reset's, a provider waits 10 s after an exit for that record, and a fault's
 record gathers for 30 s; a quarantine lasts 10
 minutes, doubles per strike up to 24 hours, and holds after three strikes.
 
 ## Divergences
+
+The card-paired display request in RES-A1 temporarily preserves the existing
+GPU path. VISION 2026-10-02 rejects display requests tied to a card lease by
+convention. W1-05 (Train B) replaces this convention with the separately
+governed `awake:display` level and attribution to the requesting application.
+This repair adds no public level or wire version.
+
+The composed deprecated rights host (kept) injects the resource book through its wake
+factory. Published `rights.Start` and `rights.Serve` calls without that factory
+retain their standalone compatibility fallback. Their connection protocol and
+the local Job compatibility APIs remain pending the existing D30 disposition.
 
 - **RES-L3.** A yield's confirmation is the resource's whole total falling,
   not proof that the freed bytes came from the yielded holder: a concurrent
@@ -579,9 +853,35 @@ answer rather than measuring anything itself. A second, more exact
 instrument for confirming a yield smaller than the counter's own floor
 (RES-T2, [Divergences](#divergences)) does not exist.
 
-GPU faults (RES-G1..G7) have one consumer today, the model host. Engines a
-Lemonade server manages and the PyTorch provider (TheNoise) do not yet
-attach a Guard. A reset is applied to every holder the Guard has: the
+RES-T6 has no facade test that resolves a second runtime's table and shows
+its rows unmerged with the local ones.
+
+The Linux instrument reads no adapter capacity: amdgpu's
+`mem_info_vram_total` and `mem_info_gtt_total` would give an APU's
+GPU-visible share where the reserve rule now stands in. The Windows child
+measurement (RES-L2) is held by unit tests and a self-process read; a loaded
+engine's `CurrentUsage` beside its PDH row has not been compared. A holder
+that shrank under RES-L9 grows back only on its next load, never while it
+stays resident.
+
+Both `table@1` and `leases@1` answer on the endpoint named
+`resource-table-v1` (`go/client/client.go`), although `leases@1` is the
+writing half; its rename to `resource-v1` waits for the wire renames of
+0.8.0.
+
+RES-L8's waiting word has no wire read. `leases@1` has no method that
+returns it and `AcquireResult` is closed, so a program waiting in `Acquire`
+from another process, such as the model host or ComfyUI's card helper,
+cannot read it, and no job provider relays it into
+`OperationSnapshot.waiting` (abstraction-job JOB-A15). Its surface, a read
+on resource's next `leases` version or a progress word on a blocking
+`Acquire`, is decided with that version. A holder whose image is an
+interpreter, such as an application's own `python.exe`, reads as the
+interpreter's name; naming it by its application is open.
+
+GPU faults (RES-G1..G7) are consumed by the model host, the Lemonade
+provider (`lemonaded`) and the PyTorch provider (`pytorchd`), each of which
+attaches a Guard. A reset is applied to every holder the Guard has: the
 records name no adapter, and attribution to one adapter on a machine with
 two GPUs is not built. Linux and macOS have no record source; there the
 Guard acts on engines' device-lost lines alone. The Panel line is carried

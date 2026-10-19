@@ -6,3 +6,4 @@ description = "Hand-written typed client over the generated abstraction.resource
 
 [dependencies]
 abstraction-frame = { path = "../../abstraction-identity/rust-frame" }
+abstraction-rights-api = { path = "../../abstraction-rights/rust" }

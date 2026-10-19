@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/openabstractions/abstraction-resource/go/internal/personfolders"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +12,113 @@ import (
 	"testing"
 	"time"
 
+	identity "github.com/openabstractions/abstraction-identity"
 	res "github.com/openabstractions/abstraction-resource/go/client"
 	"github.com/openabstractions/abstraction-resource/go/holder"
 )
+
+func TestQuarantineRefreshDetectsRestoredTimeAndBindsInitialStamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quarantine.json")
+	g, err := New(Options{State: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := Fingerprint{Model: "fixture", Engine: "fixture", Shape: "1"}
+	g.Failed(fp)
+	entries, seen, err := loadStateStamped(path)
+	if err != nil || len(entries) != 1 {
+		t.Fatal(entries, err)
+	}
+	opened, err := New(Options{State: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.stateSeen != seen {
+		t.Fatal("initial parsed bytes lost their owning stamp")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	before, info, err := identity.FileStamp(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), `"strikes": 1`, `"strikes": 2`, 1)
+	if changed == string(data) || len(changed) != len(data) {
+		t.Fatal("fixture did not change equal-length JSON")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		after, current, err := identity.FileStamp(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Size() != info.Size() || !current.ModTime().Equal(info.ModTime()) {
+			t.Fatal("fixture did not preserve size/time")
+		}
+		if after != before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("filesystem does not expose an advanced change stamp")
+		}
+	}
+	if _, _, err := readState(f, stamp{key: before}); err == nil {
+		t.Fatal("read accepted a file changed after initial stamp")
+	}
+	got := opened.Quarantined()
+	if len(got) != 1 || got[0].Strikes != 2 {
+		t.Fatal("restored mtime hid external quarantine rewrite", got)
+	}
+	if again := opened.Quarantined(); len(again) != 1 || again[0].Strikes != 2 {
+		t.Fatal(again)
+	}
+}
+
+// The existing damage-report callback is a deterministic boundary between
+// the initial load and constructor completion. A new file written there was
+// never parsed by that initial load and must be read at the next check.
+func TestQuarantineInitializationDoesNotStampAnUnreadReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quarantine.json")
+	g, err := New(Options{State: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := Fingerprint{Model: "fixture", Engine: "fixture", Shape: "1"}
+	g.Failed(fp)
+	valid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reports := 0
+	opened, err := New(Options{State: path, OnError: func(error) {
+		reports++
+		if err := os.WriteFile(path, valid, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}})
+	if err != nil || reports != 1 {
+		t.Fatal(reports, err)
+	}
+	if entries := opened.Quarantined(); len(entries) != 1 || entries[0].Key != fp.Key() {
+		t.Fatal("initial load cached metadata of unparsed replacement", entries)
+	}
+}
 
 type fakeLeases struct {
 	mu       sync.Mutex
@@ -43,6 +148,10 @@ func (f *fakeLeases) Renew(id string) (res.LeaseChange, error) {
 	_, ok := f.live[id]
 	return res.LeaseChange{Applied: ok}, nil
 }
+func (*fakeLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (f *fakeLeases) Release(id string) (res.LeaseChange, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -509,6 +618,41 @@ func TestBusyHoldsOneWakeLeaseThroughOverlappingWork(t *testing.T) {
 	}
 }
 
+// RES-G5: standby that begins while work holds the wake lease is reported
+// once, and the running work keeps its wake lease until it ends.
+func TestStandbyUnderTheWakeLeaseIsReportedOnce(t *testing.T) {
+	var reports []error
+	released := 0
+	g, err := New(Options{
+		Wake:    func(string) (func(), error) { return func() { released++ }, nil },
+		OnError: func(err error) { reports = append(reports, err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := g.Busy("image flux")
+	g.Report(Event{Kind: StandbyEnter, Source: "Kernel-Power 506"})
+	g.Report(Event{Kind: StandbyEnter, Source: "Kernel-Power 506"})
+	if len(reports) != 1 || !strings.Contains(reports[0].Error(), "image flux") {
+		t.Fatalf("reports %v", reports)
+	}
+	if released != 0 {
+		t.Fatal("standby released the running work's wake lease")
+	}
+	end()
+	if released != 1 {
+		t.Fatalf("the wake lease was released %d times", released)
+	}
+	g.Report(Event{Kind: StandbyExit, Source: "Kernel-Power 507"})
+	if err := g.AdmitLoad(context.Background()); err != nil {
+		t.Fatalf("after standby ended: %v", err)
+	}
+	g.Report(Event{Kind: StandbyEnter, Source: "Kernel-Power 506"})
+	if len(reports) != 1 {
+		t.Fatalf("standby with no work running was reported: %v", reports)
+	}
+}
+
 // RES-G5: the dispatch rows are data a provider applies.
 func TestDispatchRows(t *testing.T) {
 	sd, ok := DispatchFor(EngineSDCpp)
@@ -671,3 +815,6 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// TestMain confines per-user folders to the canonical owned test fixture.
+func TestMain(m *testing.M) { os.Exit(personfolders.Main(m)) }

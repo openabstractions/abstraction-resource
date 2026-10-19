@@ -228,7 +228,8 @@ func TestNoInstrumentLeavesEveryRowClaimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Instrument != instrument.NameNone || state.Held != 0 || state.Capacity != 0 {
+	// The capacity is the machine's own figure, never unknown (RES-L2).
+	if state.Instrument != instrument.NameNone || state.Held != 0 || state.Capacity != instrument.SharedCardCapacity(instrument.MachineMemory()) {
 		t.Fatalf("state %+v", state)
 	}
 	if len(state.Holders) != 1 || state.Holders[0].Evidence != wire.EvidenceClaimed {

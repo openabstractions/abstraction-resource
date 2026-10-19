@@ -8,6 +8,15 @@ import (
 	wire "github.com/openabstractions/abstraction-resource/go/abstraction/resource"
 )
 
+func TestKnownResourcesPublishedSlice(t *testing.T) {
+	// The published client variable is []string and initially shares the
+	// canonical generated slice; reassignment remains package-local.
+	var published []string = KnownResources
+	if !reflect.DeepEqual(published, wire.KnownResources) || len(published) == 0 || &published[0] != &wire.KnownResources[0] {
+		t.Fatal("published KnownResources no longer forwards the canonical slice")
+	}
+}
+
 // Acquire's published closed outcome vocabulary stays unchanged when a new
 // method is added to leases@1 (VISION 2026-10-01, service compatibility).
 func TestAcquirePublishedOutcomeRefusesHeld(t *testing.T) {

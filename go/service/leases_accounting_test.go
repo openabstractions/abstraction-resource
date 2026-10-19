@@ -11,11 +11,11 @@ import (
 func TestAcquireReservesEarlierLeaseOfSameSubject(t *testing.T) {
 	book := cardBook(t, card(10*gib), BookOptions{})
 	who := asker()
-	first := book.Acquire(context.Background(), who, nil, instrument.Card0, 8*gib, 0)
+	first := book.Acquire(context.Background(), who, boundPeer(), instrument.Card0, 8*gib, 0)
 	if first.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatalf("first acquire: %s", first.Outcome)
 	}
-	second := book.Acquire(context.Background(), who, nil, instrument.Card0, 8*gib, 0)
+	second := book.Acquire(context.Background(), who, boundPeer(), instrument.Card0, 8*gib, 0)
 	if second.Outcome != wire.AcquireOutcomeHoldersRefused || second.Lease != nil {
 		t.Fatalf("second acquire spent the first lease's reservation: %+v", second)
 	}
@@ -26,7 +26,7 @@ func TestAcquireCountsMeasuredUseOncePerSubject(t *testing.T) {
 	in := card(18 * gib)
 	book := cardBook(t, in, BookOptions{})
 	for range 2 {
-		result := book.Acquire(context.Background(), who, nil, instrument.Card0, 8*gib, 0)
+		result := book.Acquire(context.Background(), who, boundPeer(), instrument.Card0, 8*gib, 0)
 		if result.Outcome != wire.AcquireOutcomeAcquired {
 			t.Fatalf("initial acquire: %s", result.Outcome)
 		}
@@ -35,7 +35,7 @@ func TestAcquireCountsMeasuredUseOncePerSubject(t *testing.T) {
 	in.samples = append(in.samples, instrument.Sample{PID: 222, Program: who.Program, Account: who.Account, Amount: 4 * gib})
 	in.mu.Unlock()
 	other := Subject{Program: `C:\other\program.exe`, Account: who.Account}
-	result := book.Acquire(context.Background(), other, nil, instrument.Card0, 4*gib, 0)
+	result := book.Acquire(context.Background(), other, boundPeer(), instrument.Card0, 4*gib, 0)
 	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
 		t.Fatalf("measured bytes discounted once per lease: %+v", result)
 	}
@@ -48,7 +48,7 @@ func TestAcquireMatchesMeasuredUseToProgramAndAccount(t *testing.T) {
 	in := card(20 * gib)
 	book := cardBook(t, in, BookOptions{})
 	for _, who := range []Subject{a, b} {
-		result := book.Acquire(context.Background(), who, nil, instrument.Card0, 8*gib, 0)
+		result := book.Acquire(context.Background(), who, boundPeer(), instrument.Card0, 8*gib, 0)
 		if result.Outcome != wire.AcquireOutcomeAcquired {
 			t.Fatalf("initial acquire for %s: %s", who.Account, result.Outcome)
 		}
@@ -57,7 +57,7 @@ func TestAcquireMatchesMeasuredUseToProgramAndAccount(t *testing.T) {
 	in.samples = append(in.samples, instrument.Sample{PID: 222, Program: program, Account: a.Account, Amount: 4 * gib})
 	in.mu.Unlock()
 	other := Subject{Program: `C:\other\program.exe`, Account: a.Account}
-	result := book.Acquire(context.Background(), other, nil, instrument.Card0, 5*gib, 0)
+	result := book.Acquire(context.Background(), other, boundPeer(), instrument.Card0, 5*gib, 0)
 	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
 		t.Fatalf("account A's bytes discounted account B's lease: %+v", result)
 	}
@@ -68,8 +68,12 @@ func TestAcquireBeyondDerivedPoolIsInsufficient(t *testing.T) {
 	if pool <= 0 {
 		t.Skip("this machine does not report physical memory")
 	}
-	book := cardBook(t, card(0), BookOptions{})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, pool+1, 0)
+	// The instrument reports no capacity and declares the card carved from
+	// memory, as the Windows counters do: the pool is the machine's memory.
+	in := instrument.NewFixed()
+	in.Set(instrument.Card0, instrument.FixedResource{Pool: instrument.Memory})
+	book := fixedBook(t, in, nil)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, pool+1, 0)
 	if result.Outcome != wire.AcquireOutcomeInsufficient || len(result.Asked) != 0 {
 		t.Fatalf("request larger than derived pool: %+v", result)
 	}

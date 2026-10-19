@@ -1,11 +1,11 @@
-# C++ resource table and leases
+# C++ resource table and [leases](https://openabstractions.github.io/reference.html#concept-resource.leases)
 
 *For C++ applications.*
 
 Install the runtime first: https://openabstractions.org/adopt.html
 
 `abstraction::resource_client` is supplied by the installed `abstraction_resource`
-CMake package. It uses generated Table and Leases codecs and shared identity IPC.
+CMake package. It uses generated Table and [Leases](https://openabstractions.github.io/reference.html#concept-resource.leases) codecs and shared identity IPC.
 
 `resource::client::TableClient(endpoint).resources()` lists the resources this
 machine's instrument and adapters can report. `holders(resource, fresh)` reads

@@ -1,0 +1,17 @@
+# A 128 GiB APU: card:0 is carved from memory, so the two are one pool. The
+# first 100 GiB lease fits; the second, on memory, does not fit beside it, so
+# the card lease's holder is asked and, answering nothing, the request is
+# refused with the asker allocating nothing.
+measure memory capacity=128GiB
+measure card:0 pool=memory
+permit ollama
+permit comfyui
+acquire ollama card:0 100GiB
+acquire comfyui memory 100GiB wait=200
+nowait comfyui card:0 100GiB
+acquire comfyui memory 20GiB
+
+# expect 5: acquired asked=none [RES-L2]
+# expect 6: holders_refused asked=ollama:unanswered [RES-L2]
+# expect 7: held [RES-L2]
+# expect 8: acquired asked=none [RES-L2]

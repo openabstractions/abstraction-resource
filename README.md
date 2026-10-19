@@ -1,11 +1,17 @@
 # abstraction-resource
 
-*For applications and operators that need to know who holds memory, and model
-servers that take or yield it. Example code is in [Read it](#read-it).*
+*For programs that hold a graphics card or memory, keep the machine awake, and
+operators who need to know who holds them, and for model servers that take
+or yield them. Example code is in [Read it](#read-it).*
 
 Who holds graphics-card memory (a card, `card:0` is the first) and system
-memory on this machine, with leases that reserve an amount and a wake lease
-that keeps the machine awake for its holder.
+memory on this machine, with [leases](https://openabstractions.github.io/reference.html#concept-resource.lease) that reserve an amount and requests
+to keep the machine awake.
+
+The current `keepawake` command is `go/cmd/keepawake` in this repository. It
+takes an `awake` lease through the resource client, renews until Ctrl-C, and
+releases on Ctrl-C. The caller needs `abstraction.resource/hold` on `awake`.
+The command under abstraction-rights remains a legacy compatibility entry point.
 
 **What's new here:** Programs sharing one graphics card see each other: one
 table says who holds how much, measured where the system can measure it, and a
@@ -13,7 +19,7 @@ lease asks the holders OA can reach (OA lease holders and the engines OA can
 unload) to give memory back before a request is refused.
 
 One table of every hold of a scarce resource on this machine, with the program
-that holds it, the account it runs as, how much, and whether an instrument measured that amount or its holder claimed it.
+that holds it, the account it runs as, how much, and [whether an instrument measured that amount or its holder claimed it](https://openabstractions.github.io/reference.html#concept-resource.measurement-evidence).
 
     card:0  held 20.95 GiB  instrument windows-gpu-counters
     verified  …\llama.cpp-win-x86_64-vulkan-avx2-2.40.0\llama-server.exe  17.29 GiB
@@ -30,7 +36,7 @@ that answers the whole device.
 ## What it is
 
 The service holds resources, not models. A resource is named `card:<n>` for an
-accelerator's memory, `memory` for system memory, or `awake` for the wake lease.
+accelerator's memory, `memory` for system memory, or `awake` for requests to keep the machine awake.
 On an APU `card:<n>` and `memory` report the same bytes, and a reader never
 sums them.
 
@@ -52,39 +58,54 @@ grant the service wrote. `held` sums the verified rows only.
 `capacity` is 0 where the instrument cannot say, which is the case on a
 shared-memory adapter whose pool is the machine's own RAM.
 
-## Leases
+## [Leases](https://openabstractions.github.io/reference.html#concept-resource.leases)
 
-`abstraction.resource/leases@1` is the writing side of the same service, on
+[`abstraction.resource/leases@1`](https://openabstractions.github.io/reference.html#concept-resource.leases) is the writing side of the same service, on
 the same endpoint. `Acquire(resource, amount, wait_ms)` decides
 `abstraction.resource/hold` on the resource, reads the table, and sends the
-holders yield requests in order: attached holders idle longest first, then
-the leases on that resource, oldest `since` first. It returns a lease or a
+holders yield requests in order: the leases on that resource, oldest `since`
+first. It returns a [lease](https://openabstractions.github.io/reference.html#concept-resource.lease) or a
 typed refusal, and every holder it asked, with what each answered and how
 long it took.
 
     card:0  108.31 GiB  acquired  lease lease-1
-      HOLDER         FREED      ANSWER   TOOK
-      host:lmstudio  17.31 GiB  yielded  7.234s
+      HOLDER                    FREED      ANSWER   TOOK
+      C:\oa\modelhostd.exe      17.31 GiB  yielded  7.234s
 
-An **attached holder** predates OA: LM Studio, Ollama and ComfyUI hold the card
-and answer no lease call, so the service yields them through each server's own
-mechanism — LM Studio's unload endpoint, Ollama's `keep_alive: 0`, ComfyUI's
-`/api/free` — and reports the bytes the instrument then shows, never what the
-server replied. Whether a server may be yielded is the rule
-`abstraction.resource/yield` on `server:<name>`.
+An app that runs OA's integration (OA's own engines, or an app with OA's
+node pack and connector) joins as a lease holder. An app without it (a
+stock model server) is **foreign memory**: a verified row with no `lease`,
+measured and never driven. A load that foreign memory blocks is refused;
+the app that asked reads "Not enough memory: another program holds memory
+OpenAbstractions doesn't manage.", and the provider's log names the program:
+"<Program> holds 20 GB that OpenAbstractions doesn't manage. Unload it in
+<Program>, or close <Program>."
 
 A holder that implements the contract calls `Observe` for the yield requests
 addressed to it and `Answer` to say `yielded` or `refused(reason)`. Its
 `yielded` is confirmed against the instrument too.
 
-Leases live in the runtime's state, so a restart keeps them, and one nobody
+These reservations live in the runtime's state, so a restart keeps them, and one nobody
 renews by `renew_by` ends. Every ask, yield and refusal is a record with the
 asker, the holder, the bytes and the time, read with
 `openabstractions resources audit`.
 
-The wake lease is a lease of resource `awake` (RES-A1): its rule is
-`abstraction.resource/hold` on `awake`, and its lifetime stays on its holder's
-connection.
+A holder labels its own lease with `Label`, as `<app>: <model>`; the provider
+kit's holder does it at each grant. The audit's `label`, `freed` and
+`foreign` records are the person's Memory record: who labelled what, which
+lease gave how many bytes to whom, and which program outside OA held the
+memory a refused load needed (CONTRACT.md RES-L10).
+
+A [lease](https://openabstractions.github.io/reference.html#concept-resource.lease) of `awake` acquired through `Acquire` lives until released or its
+`renew_by` deadline passes. Its rule is `abstraction.resource/hold` on
+`awake`. The service holds the platform wake request for these acquired
+leases while the same holder also holds a card lease.
+
+A service that owns the holder's connection can instead keep a wake request
+for that connection's lifetime and record the hold in the resource table
+(RES-A1). The owning service releases the request when the holder closes,
+exits or is killed. A table record alone does not prove a platform request:
+the composition must supply the native wake mechanism.
 
 ## What it is not
 
@@ -104,13 +125,14 @@ residency answer rather than measuring anything itself.
 | **holder** | the program that holds a resource; one row of the table is one hold, and a program in two processes is two rows |
 | **verified** | an instrument measured this amount for this process |
 | **claimed** | the holder or its adapter asserted this hold; a claimed row's amount is 0 unless the row is a lease, in which case it is the grant the service wrote |
-| **instrument** | what measured: `windows-gpu-counters`, `linux-fdinfo`, or `none` |
+| **instrument** | what measured: `windows-gpu-counters`, `linux-fdinfo`, `metal-working-set` (capacity only), or `none` |
 | **held** | the sum of the verified amounts, and nothing else |
 | **lease** | a grant of a resource to a program, asked back on demand |
-| **attached holder** | an engine that predates OA, yielded through its own API |
+| **foreign memory** | a verified row no lease covers: a program without OA's integration, measured and never asked to yield |
 
-[CONTRACT.md](CONTRACT.md) holds the rules: RES-T1 to RES-T5 for the table,
-RES-L1 to RES-L5 for the leases and RES-A1 for the wake lease.
+[CONTRACT.md](CONTRACT.md) holds the rules: RES-T1 to RES-T6 for the table,
+RES-L1 to RES-L8 for the leases, RES-A1 for the wake lease and RES-G1 to
+RES-G7 for GPU faults.
 
 ## Rights
 
@@ -124,9 +146,9 @@ Acquiring needs `abstraction.resource/hold` on the resource asked for. A
 program with no rule is `not_permitted` before the table is read, and a
 decision point that cannot answer is `unavailable`, never a permit.
 
-Yielding an attached holder needs `abstraction.resource/yield` on
-`server:<name>`, held by the service that would do the unloading. Denying it
-is how a person says an engine is not to be touched.
+Asking an app's lease back is decided as `abstraction.resource/yield` on
+that app's program, held by the service. It is on by default with no rule;
+denying it is how a person keeps one app's memory where it is.
 
 ## The instruments
 
@@ -155,6 +177,14 @@ Checked on this machine's WSL (`wsl -- ls /dev/dri`): the device does not
 exist, so there is no DRM fdinfo here to read live; the instrument is
 untested against a running kernel and stands on the synthetic-tree tests in
 `go/instrument/fdinfo_test.go` alone.
+
+**macOS.** `metal-working-set`. It measures no holder, so every row is
+claimed. `card:0`'s capacity is the Metal device's recommended working-set size
+(`MTLDevice.recommendedMaxWorkingSetSize`), read through the in-house
+Objective-C binding in `go/instrument/metal_native_darwin.m`. On an M5 Pro
+with 48 GiB it is 40,200,896,512 bytes. The card stays carved from memory,
+so card and memory leases count against each other. A build without cgo
+reads no working set and the card's pool is the machine's memory.
 
 **Everywhere else.** `none`. Every row is then claimed, and no number is
 invented.
@@ -194,12 +224,19 @@ Bindings for Go, Python, C++, Rust and JavaScript are generated from
 [resource.thrift](resource.thrift) by `scripts/generate.sh`; the schema page is
 [abstraction.resource.schema.html](abstraction.resource.schema.html).
 
+The shared `rights.Subject` used by `AcquireFor` comes from the published Rights
+packages: Go `github.com/openabstractions/abstraction-rights/go`, Python
+`abstraction-rights-protocol`, JavaScript `@openabstractions/rights`, Rust
+`abstraction-rights-api`, and C++ CMake package `abstraction_rights` with target
+`abstraction::rights_client`. The package manifests declare these dependencies;
+the generated bindings retain the shared subject type.
+
 ## Status
 
-**Published.** The public `abstraction-resource` repository carries the tags
-`go/v0.1.0` and `go/v0.1.1`, and
-`go get github.com/openabstractions/abstraction-resource/go@v0.1.1` fetches the
-latest. The contracts began as drafts of 2026-09-22.
+**Published.** The public `abstraction-resource` repository carries the Go
+module's release tags; `abstraction-provider-kit` requires `go v0.2.1`, and
+`go get github.com/openabstractions/abstraction-resource/go@latest` fetches the
+newest. The contracts began as drafts of 2026-09-22.
 
 <!-- BEGIN GENERATED PERMISSION DEFINITIONS -->
 

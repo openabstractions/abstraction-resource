@@ -1,0 +1,11 @@
+# Every hold the instrument sees is a row. Two processes of one program are
+# two rows; a process the platform would not attribute keeps its image and an
+# empty account; held sums the verified rows alone, never an engine's claim.
+measure card:0 capacity=24GiB
+sample card:0 llama-server 4GiB
+sample card:0 llama-server 2GiB
+sample card:0 image:dwm.exe 512MiB
+engine card:0 server:lmstudio 96GiB
+table card:0
+
+# expect 6: ok capacity=24GiB held=6656MiB rows=dwm.exe/-/verified/512MiB,llama-server/S-1-5-21-7-1001/verified/2GiB,llama-server/S-1-5-21-7-1001/verified/4GiB,server:lmstudio/-/claimed/0 [RES-T1]

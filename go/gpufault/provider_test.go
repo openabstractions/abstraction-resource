@@ -39,7 +39,7 @@ type blindSource struct{}
 func (blindSource) Watch(context.Context, func(Event)) error { return errors.New("no event log") }
 
 // ForProvider is the one composition every local-engine provider uses
-// (RES-G1, RES-G3, RES-G6): a reset stops the attached holder's engine, the
+// (RES-G1, RES-G3, RES-G6): a reset stops the Guard's holder's engine, the
 // request it failed is quarantined in the provider's state, the fault is one
 // log record and one stderr line named for the provider, and a record source
 // that cannot be read is reported and logged.

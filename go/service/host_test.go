@@ -100,10 +100,10 @@ func served(t *testing.T, table *Table, policy Policy) *resourceclient.Client {
 // it on one endpoint, which is how the runtime composes them.
 func servedWithLeases(t *testing.T, table *Table, book *Book) *resourceclient.Client {
 	t.Helper()
-	return serve(t, table, nil, book)
+	return serve(t, table, permitGate, book)
 }
 
-func serve(t *testing.T, table *Table, policy Policy, book *Book) *resourceclient.Client {
+func serve(t *testing.T, table *Table, policy Policy, book *Book, enforcer ...func(context.Context, *identity.Peer, string, string) bool) *resourceclient.Client {
 	t.Helper()
 	endpoint := listen.Endpoint(fmt.Sprintf("resource-table-test-%d-%d", os.Getpid(), time.Now().UnixNano()%1_000_000))
 	if err := listen.CanEver(endpoint, Bound); err != nil {
@@ -120,6 +120,11 @@ func serve(t *testing.T, table *Table, policy Policy, book *Book) *resourceclien
 	}
 	if book != nil {
 		if err := host.EnableLeases(book); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(enforcer) > 0 && enforcer[0] != nil {
+		if err := host.EnableEnforcer(enforcer[0]); err != nil {
 			t.Fatal(err)
 		}
 	}

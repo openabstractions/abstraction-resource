@@ -59,6 +59,10 @@ func (l *bookLeases) BindProcess(string, int) (res.ProcessBindResult, error) {
 	return res.ProcessBindResult{Outcome: res.ProcessBindOutcomeBound}, nil
 }
 func (l *bookLeases) Renew(id string) (res.LeaseChange, error) { return l.book.Renew(l.who, id), nil }
+func (*bookLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (l *bookLeases) Release(id string) (res.LeaseChange, error) {
 	return l.book.Release(l.who, id), nil
 }

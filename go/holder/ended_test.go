@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/openabstractions/abstraction-resource/go/internal/personfolders"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -138,3 +140,6 @@ func TestEnsureFailsWhenTheReloadedLeaseEndsToo(t *testing.T) {
 		t.Fatalf("starts %d, overlap %v", len(loads.owned), loads.overlap)
 	}
 }
+
+// TestMain confines per-user folders to the canonical owned test fixture.
+func TestMain(m *testing.M) { os.Exit(personfolders.Main(m)) }

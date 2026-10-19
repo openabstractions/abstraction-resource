@@ -11,6 +11,7 @@ import (
 	identity "github.com/openabstractions/abstraction-identity"
 	"github.com/openabstractions/abstraction-identity/listen"
 	wire "github.com/openabstractions/abstraction-resource/go/abstraction/resource"
+	"github.com/openabstractions/abstraction-rights/go/authorization/gate"
 )
 
 // ActionTableRead gates reading other programs' rows; ResourceAccount is the
@@ -19,6 +20,11 @@ const (
 	ActionTableRead = "abstraction.resource/table.read"
 	ResourceAccount = "account"
 )
+
+// actionNamespace is the namespace every resource action belongs to; the
+// table and the lease book designate each Policy they install for it
+// (RIGHTS-A7).
+const actionNamespace = "abstraction.resource"
 
 // tableCallBudget is how long one table call has to answer, and the margin a
 // lease call keeps beyond the wait it was given. expiryInterval is how often
@@ -39,16 +45,18 @@ var Bound = identity.Need{
 	Path:    identity.ProofBound,
 }
 
-// Policy authorizes one table operation for the rechecked bound caller. It
-// must honor ctx and be safe for concurrent calls. Wrap ErrPolicyUnavailable
-// when the decision cannot be obtained; every other error is a refusal, and a
-// refusal narrows the answer to the caller's own rows instead of ending it.
-type Policy func(ctx context.Context, peer *identity.Peer, action, resource string) error
+// Policy authorizes one table or lease operation for the rechecked bound
+// caller. It is the rights gate: it must honor ctx and be safe for concurrent
+// calls. Wrap ErrPolicyUnavailable when the decision cannot be obtained; every
+// other error is a refusal, and a refused table read narrows the answer to the
+// caller's own rows instead of ending it.
+type Policy = gate.Gate
 
 // ErrPolicyUnavailable distinguishes a failed decision lookup from refusal. A
 // lookup that cannot answer is never a permit and never a narrowing: the
-// caller is told the decision point is unavailable.
-var ErrPolicyUnavailable = errors.New("resource table: policy unavailable")
+// caller is told the decision point is unavailable. A missing policy is such
+// a lookup.
+var ErrPolicyUnavailable = gate.ErrUnavailable
 
 // A Host serves abstraction.resource/table@1, and the lease book beside it as
 // abstraction.resource/leases@1, on one endpoint. The two are one endpoint
@@ -66,13 +74,15 @@ type Host struct {
 	serving   bool
 	policy    Policy
 	book      *Book
+	owner     string
+	enforcer  func(context.Context, *identity.Peer, string, string) bool
 	OnError   func(error)
 	// OnStopped is called when admission stops. Assign it before Serve.
 	OnStopped func()
 }
 
 // Listen binds the endpoint. Configure a policy before Serve; without one
-// every bound caller reads every row.
+// every read of the holders reads unavailable (RES-T4).
 func Listen(endpoint string, table *Table) (*Host, error) {
 	if table == nil {
 		return nil, errors.New("resource table service: nil table")
@@ -89,7 +99,8 @@ func Listen(endpoint string, table *Table) (*Host, error) {
 }
 
 // EnablePolicy narrows other programs' rows to callers the policy authorizes.
-// Configure it before Serve.
+// Configure it before Serve. The installed policy is designated for the
+// resource namespace and refuses every action outside it (RIGHTS-A7).
 func (h *Host) EnablePolicy(policy Policy) error {
 	h.lifecycle.Lock()
 	defer h.lifecycle.Unlock()
@@ -99,7 +110,11 @@ func (h *Host) EnablePolicy(policy Policy) error {
 	if policy == nil {
 		return errors.New("resource table service: explicit policy required")
 	}
-	h.policy = policy
+	designated, err := gate.For(actionNamespace, policy)
+	if err != nil {
+		return fmt.Errorf("resource table service: %w", err)
+	}
+	h.policy = designated
 	return nil
 }
 
@@ -116,6 +131,26 @@ func (h *Host) EnableLeases(book *Book) error {
 		return errors.New("resource table service: explicit lease book required")
 	}
 	h.book = book
+	return nil
+}
+
+// EnableEnforcer designates a native process for AcquireFor. Nil is never an
+// implicit designation. Configure it before Serve, as with Rights DecideFor.
+func (h *Host) EnableEnforcer(enforcer func(context.Context, *identity.Peer, string, string) bool) error {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
+	if h.serving || h.ctx.Err() != nil || enforcer == nil {
+		return errors.New("resource: configure explicit enforcer before Serve")
+	}
+	me, err := identity.Self()
+	if err != nil {
+		return err
+	}
+	owner, err := me.Account()
+	if err != nil {
+		return err
+	}
+	h.owner, h.enforcer = owner, enforcer
 	return nil
 }
 
@@ -139,7 +174,7 @@ func (h *Host) Serve(ctx context.Context) error {
 		return errors.New("resource table service: host already served")
 	}
 	h.serving = true
-	policy, book := h.policy, h.book
+	policy, book, owner, enforcer := h.policy, h.book, h.owner, h.enforcer
 	h.lifecycle.Unlock()
 	//unchecked: Close is idempotent (sync.Once); this async cancellation callback has no caller to report the error to
 	stop := context.AfterFunc(ctx, func() { _ = h.Close() })
@@ -172,6 +207,7 @@ func (h *Host) Serve(ctx context.Context) error {
 		}
 	}()
 	defer h.Close()
+	slots := listen.NewCallAdmission(64)
 	for {
 		conn, err := h.listener.Accept()
 		if err != nil {
@@ -180,9 +216,14 @@ func (h *Host) Serve(ctx context.Context) error {
 			}
 			return err
 		}
+		release, admitted := slots.Take(conn)
+		if !admitted {
+			continue
+		}
 		h.workers.Add(1)
 		go func() {
 			defer h.workers.Done()
+			defer release()
 			defer conn.Close()
 			budget := tableCallBudget
 			if book != nil {
@@ -201,7 +242,7 @@ func (h *Host) Serve(ctx context.Context) error {
 			if err == nil {
 				services := []wire.ServedService{&wire.TableDispatcher{Handler: &receiver{table: h.table, call: call, policy: policy, ctx: requestCtx}}}
 				if book != nil {
-					services = append(services, &wire.LeasesDispatcher{Handler: &leaseReceiver{book: book, call: call, ctx: requestCtx}})
+					services = append(services, &wire.LeasesDispatcher{Handler: &leaseReceiver{book: book, call: call, ctx: requestCtx, owner: owner, enforcer: enforcer}})
 				}
 				var response []byte
 				response, err = wire.ServeEndpoint(call.Frame, "openabstractions", "", services...)
@@ -327,11 +368,8 @@ func (r *receiver) recheck() error {
 }
 
 // authorize applies the configured policy to one operation. Without a policy
-// every bound caller is permitted.
+// the decision is unavailable, never a permit.
 func (r *receiver) authorize(action, resource string) error {
-	if r.policy == nil {
-		return nil
-	}
 	ctx := r.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -340,11 +378,11 @@ func (r *receiver) authorize(action, resource string) error {
 	if err != nil {
 		return err
 	}
-	err = r.policy(ctx, peer, action, resource)
-	if err == nil && ctx.Err() == nil {
+	err = r.policy.Check(ctx, peer, action, resource)
+	if err == nil {
 		return nil
 	}
-	if ctx.Err() != nil || errors.Is(err, ErrPolicyUnavailable) {
+	if errors.Is(err, ErrPolicyUnavailable) {
 		return &wire.ServiceError{Code: wire.ServiceErrorCodePolicyUnavailable, Message: "resource table policy decision unavailable"}
 	}
 	return &wire.ServiceError{Code: wire.ServiceErrorCodeForbidden, Message: "reading other programs' rows is not permitted"}

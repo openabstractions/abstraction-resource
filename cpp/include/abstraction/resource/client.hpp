@@ -1,6 +1,7 @@
 #pragma once
 #include <abstraction/resource/rec.h>
 #include <abstraction/ipc/frame.hpp>
+#include <abstraction/facade/bootstrap.hpp>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -14,23 +15,15 @@ namespace abstraction::resource::client {
 // field, not the endpoint, selects Table or Leases.
 inline std::string default_endpoint() {
     if (const char* value = std::getenv("ABSTRACTION_RESOURCE_ENDPOINT")) { if (*value) return value; }
-#ifdef _WIN32
-    return R"(\\.\pipe\openabstractions-resource-table-v1)";
-#else
-    if (const char* value = std::getenv("XDG_RUNTIME_DIR")) { if (*value) return std::string(value) + "/openabstractions-resource-table-v1.sock"; }
-    const char* temp = std::getenv("TMPDIR");
-    const char* user = std::getenv("USER");
-    return std::string(temp && *temp ? temp : "/tmp") + "/openabstractions-resource-table-v1-" + (user ? user : "") + ".sock";
-#endif
+    return abstraction::facade::bootstrap::installed_endpoint("resource-table-v1");
 }
 
 // The compact client returns data and raises a structured service error for
 // typed refusals. Only ok carries data.
 template <typename T>
 T reply_data(std::string_view operation, ResourceCallOutcome outcome, std::optional<T> data) {
-    if (outcome == ResourceCallOutcome::Ok && data) return std::move(*data);
-    if (outcome == ResourceCallOutcome::Ok || data || wire_name(outcome).empty())
-        throw ServiceError("invalid_result", std::string(operation) + " outcome/payload mismatch");
+    // The generated RPC client already validated the result postcondition.
+    if (outcome == ResourceCallOutcome::Ok) return std::move(data).value();
     std::string code(wire_name(outcome));
     if (outcome == ResourceCallOutcome::Unavailable) code = "policy_unavailable";
     if (outcome == ResourceCallOutcome::Invalid) code = "invalid_request";
@@ -42,9 +35,9 @@ T reply_data(std::string_view operation, ResourceCallOutcome outcome, std::optio
 // measures nothing itself.
 class TableClient {
 public:
-    explicit TableClient(std::string endpoint = default_endpoint()) : transport_(std::move(endpoint), 5000, 1u << 20) {}
+    explicit TableClient(std::string endpoint = default_endpoint()) : transport_(std::move(endpoint), ipc::kDefaultCallBudgetMs, ipc::kDefaultMaxFrame) {}
     // Explicit operation scope; copies retain the same absolute deadline.
-    TableClient(std::string endpoint, ipc::Deadline deadline) : transport_(std::move(endpoint), deadline, 1u << 20) {}
+    TableClient(std::string endpoint, ipc::Deadline deadline) : transport_(std::move(endpoint), deadline, ipc::kDefaultMaxFrame) {}
     TableClient with_server_expectation(std::optional<ipc::ServerExpectation> server) const {
         auto copy = *this; copy.transport_ = transport_.with_server_expectation(std::move(server)); return copy;
     }
@@ -75,12 +68,12 @@ private:
 };
 
 // Leases on a scarce resource, asked back on demand (CONTRACT.md RES-L1..RES-L5,
-// RES-A1). A holder that predates OA is an attached holder: the service yields
-// on its behalf through the host's own mechanism. Version 1 kills nothing.
+// RES-A1). An app running OA's integration holds leases; memory no lease
+// covers is foreign and never asked to yield. Version 1 kills nothing.
 class LeasesClient {
 public:
-    explicit LeasesClient(std::string endpoint = default_endpoint()) : transport_(std::move(endpoint), 5000, 1u << 20) {}
-    LeasesClient(std::string endpoint, ipc::Deadline deadline) : transport_(std::move(endpoint), deadline, 1u << 20) {}
+    explicit LeasesClient(std::string endpoint = default_endpoint()) : transport_(std::move(endpoint), ipc::kDefaultCallBudgetMs, ipc::kDefaultMaxFrame) {}
+    LeasesClient(std::string endpoint, ipc::Deadline deadline) : transport_(std::move(endpoint), deadline, ipc::kDefaultMaxFrame) {}
     LeasesClient with_server_expectation(std::optional<ipc::ServerExpectation> server) const {
         auto copy = *this; copy.transport_ = transport_.with_server_expectation(std::move(server)); return copy;
     }
@@ -109,6 +102,15 @@ public:
         ::abstraction::resource::LeasesClient<ipc::FrameTransport> raw(transport);
         auto reply = raw.release(lease);
         return reply_data("Release", reply.outcome, std::move(reply.change));
+    }
+    // Names what the bound caller's own lease holds, as app: model, for a
+    // person reading the machine's memory. At most 200 bytes on one line;
+    // empty clears it.
+    LeaseChange label(const std::string& lease, const std::string& text) const {
+        auto transport = transport_;
+        ::abstraction::resource::LeasesClient<ipc::FrameTransport> raw(transport);
+        auto reply = raw.label(lease, text);
+        return reply_data("Label", reply.outcome, std::move(reply.change));
     }
     // Yield requests addressed to the bound caller since cursor, waiting up to
     // wait_ms (0..30000) for one.

@@ -11,4 +11,12 @@ name = "abstraction-resource-client"
 version = "0.0.0"
 dependencies = [
  "abstraction-frame",
+ "abstraction-rights-api",
+]
+
+[[package]]
+name = "abstraction-rights-api"
+version = "0.0.0"
+dependencies = [
+ "abstraction-frame",
 ]

@@ -4,6 +4,7 @@ package service
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +72,9 @@ type Table struct {
 	age        time.Duration
 	now        func() time.Time
 	refresh    func()
+	// credit names, for each sample of a resource, the lease its bytes are
+	// credited to; the lease book that spends this table sets it (OpenBook).
+	credit func(resource string, samples []instrument.Sample) []string
 
 	mu     sync.Mutex
 	cached map[string]instrument.Reading
@@ -100,6 +104,63 @@ func (t *Table) SetRefresh(refresh func()) { t.refresh = refresh }
 
 // Instrument names what measures for this table.
 func (t *Table) Instrument() string { return t.instrument.Name() }
+
+// poolOf is the resource whose pool resource spends, as the instrument
+// declares it (CONTRACT.md RES-L2). Claims never declare a pool: an engine's
+// report is not a capacity source.
+func (t *Table) poolOf(resource string) string { return instrument.PoolOf(t.instrument, resource) }
+
+// Pool is the bytes resource's pool holds, for deciding what is free. It is
+// the capacity Holders reports, so the lease book, the model catalogue's fit
+// rule, the runtime's context plan and every client reading the table over
+// the wire take one figure (CONTRACT.md RES-L2). It reads the instrument's
+// last sample and asks no holder. An acquire still decides at load time: on a
+// machine whose card cannot be read, Fit may say a model fits and the later
+// acquire answers unavailable.
+func (t *Table) Pool(resource string) int64 {
+	state, _, err := t.snapshot(resource, false)
+	if err != nil {
+		return t.pool(resource, 0, false)
+	}
+	return state.Capacity
+}
+
+// pool is the one capacity rule, applied to a capacity the instrument
+// measured. Capacity comes from the service's own instrument and from the
+// machine's memory figure, never from a claim, an engine's report or a
+// host's survey. The instrument's capacity for the resource stands where it
+// has one: the GPU-visible memory DXGI states for the adapter on Windows,
+// Metal's recommended working set on a Mac. A resource the instrument
+// declares carved from another (a card carved from memory) takes that
+// resource's capacity where the instrument measured one. Otherwise memory is
+// the machine's physical memory, and a card carved from it is that memory
+// less the system's reserve (instrument.SharedCardCapacity). A card the
+// instrument cannot read at all (a basic display adapter, a virtual
+// machine's) is read as carved from memory too. A resource that is its own
+// pool and has no capacity has no pool, and every request there asks the
+// holders.
+func (t *Table) pool(resource string, capacity int64, readable bool) int64 {
+	if capacity > 0 {
+		return capacity
+	}
+	key := t.poolOf(resource)
+	if key == resource && !readable && strings.HasPrefix(resource, instrument.CardPrefix) {
+		key = instrument.Memory
+	}
+	if key != resource {
+		if reading, err := t.read(key, false); err == nil && reading.Capacity > 0 {
+			return reading.Capacity
+		}
+	}
+	if key != instrument.Memory {
+		return 0
+	}
+	memory := instrument.MachineMemory()
+	if strings.HasPrefix(resource, instrument.CardPrefix) {
+		return instrument.SharedCardCapacity(memory)
+	}
+	return memory
+}
 
 func (t *Table) verifiedProcessSamples() bool {
 	proof, ok := t.instrument.(instrument.ProcessSampleIdentity)
@@ -146,15 +207,23 @@ func (t *Table) snapshot(resource string, fresh bool) (wire.ResourceState, []ins
 	if err != nil {
 		return wire.ResourceState{}, nil, err
 	}
-	state := wire.ResourceState{Resource: resource, Capacity: reading.Capacity, Holders: []wire.Holder{},
+	state := wire.ResourceState{Resource: resource, Capacity: t.pool(resource, reading.Capacity, true), Holders: []wire.Holder{},
 		Observed: stamp(reading.At), Instrument: t.instrument.Name()}
-	for _, s := range reading.Samples {
+	var credited []string
+	if t.credit != nil {
+		credited = t.credit(resource, reading.Samples)
+	}
+	for i, s := range reading.Samples {
 		program := s.Program
 		if program == "" {
 			program = s.Image
 		}
-		state.Holders = append(state.Holders, wire.Holder{Program: program, Account: s.Account,
-			Amount: s.Amount, Evidence: wire.EvidenceVerified, Detail: s.Detail})
+		row := wire.Holder{Program: program, Account: s.Account,
+			Amount: s.Amount, Evidence: wire.EvidenceVerified, Detail: s.Detail}
+		if i < len(credited) {
+			row.Lease = credited[i]
+		}
+		state.Holders = append(state.Holders, row)
 		state.Held += s.Amount
 	}
 	for _, c := range t.claimed() {
@@ -210,4 +279,4 @@ func (t *Table) claimed() []Claim {
 }
 
 // stamp writes the contract's timestamp: rfc3339 with microseconds, in UTC.
-func stamp(at time.Time) string { return at.UTC().Format("2006-01-02T15:04:05.000000Z") }
+func stamp(at time.Time) string { return wire.FormatTimestamp(at) }

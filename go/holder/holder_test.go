@@ -3,10 +3,14 @@ package holder
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/openabstractions/abstraction-identity/placetest"
 	res "github.com/openabstractions/abstraction-resource/go/client"
 )
 
@@ -18,6 +22,63 @@ type testLeases struct {
 	releaseCalls int
 	onRelease    func()
 	onAcquire    func()
+}
+
+type foreignLeases struct {
+	testLeases
+	rows []res.Holder
+}
+
+func (*foreignLeases) Acquire(string, int64, time.Duration) (res.AcquireResult, error) {
+	return res.AcquireResult{Outcome: res.AcquireOutcomeInsufficient}, nil
+}
+
+func (f *foreignLeases) Holders(string, bool) (res.ResourceState, error) {
+	return res.ResourceState{Holders: f.rows}, nil
+}
+
+func TestInsufficientMemoryNamesForeignImageAcrossSelfAlias(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "own-alias")
+	target := filepath.Dir(self)
+	if runtime.GOOS == "windows" {
+		err = placetest.Junction(parent, target)
+	} else {
+		err = os.Symlink(target, parent)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(parent); err != nil {
+			t.Error(err)
+		}
+	})
+	alias := filepath.Join(parent, filepath.Base(self))
+	foreign := filepath.Join(dir, "foreign.exe")
+	if err := os.WriteFile(foreign, []byte("another measured image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leases := &foreignLeases{rows: []res.Holder{
+		{Evidence: res.EvidenceVerified, Program: alias, Amount: 8192},
+		{Evidence: res.EvidenceVerified, Program: foreign, Amount: 1024},
+	}}
+	holder := &Holder{opts: Options{Resource: "card:0", Leases: leases}}
+	_, err = holder.acquireWaiting(t.Context(), 12288)
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.ForeignProgram != foreign || failure.ForeignAmount != 1024 {
+		t.Fatalf("insufficient outcome named the wrong holder: %#v (%v)", failure, err)
+	}
+	unknown := filepath.Join(dir, "unavailable.exe")
+	leases.rows = append(leases.rows, res.Holder{Evidence: res.EvidenceVerified, Program: unknown, Amount: 4096})
+	_, err = holder.acquireWaiting(t.Context(), 12288)
+	if !errors.As(err, &failure) || failure.ForeignProgram != unknown || failure.ForeignAmount != 4096 {
+		t.Fatalf("an unreadable measured program was lost: %#v (%v)", failure, err)
+	}
 }
 
 func (f *testLeases) Acquire(resource string, amount int64, wait time.Duration) (res.AcquireResult, error) {
@@ -37,6 +98,10 @@ func (f *testLeases) BindProcess(string, int) (res.ProcessBindResult, error) {
 func (f *testLeases) Renew(string) (res.LeaseChange, error) {
 	return res.LeaseChange{Applied: true}, nil
 }
+func (*testLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (f *testLeases) Release(id string) (res.LeaseChange, error) {
 	f.mu.Lock()
 	f.releaseCalls++
@@ -254,7 +319,11 @@ func TestCancelledAcquireReleasesGrantWithoutStarting(t *testing.T) {
 
 func TestBeginProtectsActiveComponentUntilEnded(t *testing.T) {
 	leases := &testLeases{}
-	h := newTestHolder(t, leases)
+	h, err := New(Options{Leases: leases, Resource: "card:0", Idle: time.Hour, YieldWait: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
 	end, err := h.Begin(context.Background(), "checkpoint")
 	if err != nil {
 		t.Fatal(err)
@@ -265,12 +334,56 @@ func TestBeginProtectsActiveComponentUntilEnded(t *testing.T) {
 	}
 	lease, _ := h.Snapshot("checkpoint")
 	request := res.YieldRequest{Resource: "card:0", Lease: lease, Amount: 4096}
-	if answer, _ := h.Yield(request); answer != res.YieldAnswerRefused {
-		t.Fatalf("active yield %s", answer)
+	// A request still running past the yield's bound keeps its component.
+	if answer, _ := h.Yield(request); answer != res.YieldAnswerRefused || !owned.Alive() {
+		t.Fatalf("active yield %s, alive %t", answer, owned.Alive())
 	}
 	end()
 	end()
 	if answer, _ := h.Yield(request); answer != res.YieldAnswerYielded {
 		t.Fatalf("ended yield %s", answer)
+	}
+}
+
+// A yield that arrives during a request waits for that request to end and
+// then yields: the request is never cut short and the asker is not refused
+// (RES-L3).
+func TestYieldWaitsForTheRunningRequest(t *testing.T) {
+	leases := &testLeases{}
+	h, err := New(Options{Leases: leases, Resource: "card:0", Idle: time.Hour, YieldWait: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Close)
+	end, err := h.Begin(context.Background(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := &testOwned{alive: true, stop: true}
+	if err := h.Ensure(context.Background(), "chat", prepare(owned)); err != nil {
+		t.Fatal(err)
+	}
+	lease, _ := h.Snapshot("chat")
+	answered := make(chan res.YieldAnswer, 1)
+	go func() {
+		answer, _ := h.Yield(res.YieldRequest{Resource: "card:0", Lease: lease, Amount: 4096})
+		answered <- answer
+	}()
+	select {
+	case answer := <-answered:
+		t.Fatalf("yield answered %s while the request ran", answer)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if !owned.Alive() {
+		t.Fatal("the running request's engine was stopped")
+	}
+	end()
+	select {
+	case answer := <-answered:
+		if answer != res.YieldAnswerYielded || owned.Alive() {
+			t.Fatalf("after the request: %s, alive %t", answer, owned.Alive())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the yield did not follow the request's end")
 	}
 }

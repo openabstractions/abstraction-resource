@@ -25,6 +25,9 @@ type ProviderOptions struct {
 	// Records is the platform's records; nil reads PlatformRecords on
 	// Windows and none elsewhere.
 	Records Records
+	// Awake reports whether the machine is demonstrably awake now; nil reads
+	// PlatformAwake when Records is the platform's, and nothing otherwise.
+	Awake func() (bool, error)
 	// Wake takes the wake lease while GPU work runs; nil takes none.
 	Wake WakeFunc
 	// Logger receives one warning record per fault and per fault-handling
@@ -43,9 +46,16 @@ type ProviderOptions struct {
 // fault's Panel line on stderr. The provider attaches its holders, asks the
 // Guard before each load and runs it.
 func ForProvider(o ProviderOptions) (*Guard, error) {
-	source := o.Records
+	source, awake := o.Records, o.Awake
 	if source == nil && runtime.GOOS == "windows" {
 		source = PlatformRecords()
+		if awake == nil {
+			awake = PlatformAwake
+			// Register now, so the display state is known before the first
+			// load asks; an error here is read again by each Awake call.
+			//unchecked: PlatformAwake returns the same error on each call
+			startDisplayWatch()
+		}
 	}
 	state := ""
 	if o.State != "" {
@@ -55,6 +65,7 @@ func ForProvider(o ProviderOptions) (*Guard, error) {
 		Records: source,
 		State:   state,
 		Wake:    o.Wake,
+		Awake:   awake,
 		// Each GPU fault handling error is one OA logging record too: a
 		// damaged quarantine moved aside, a source gone blind (RES-G3).
 		OnError: func(err error) {

@@ -28,8 +28,16 @@ import (
 // changes (abstraction-rights RIGHTS-R23), so a revoke takes effect before its
 // reply.
 func (b *Book) Recheck(ctx context.Context) {
+	_ = b.RecheckChecked(ctx)
+}
+
+// RecheckChecked reports unavailable decisions while preserving their leases.
+// Existing periodic Recheck intentionally keeps the same uncertainty behavior.
+func (b *Book) RecheckChecked(ctx context.Context) error {
 	if b.standing == nil {
-		return
+		// Without a Standing policy every decision is unavailable, which
+		// ends nothing here.
+		return ErrPolicyUnavailable
 	}
 	type holding struct {
 		who      Subject
@@ -44,26 +52,35 @@ func (b *Book) Recheck(ctx context.Context) {
 		}
 	}
 	b.mu.Unlock()
+	var failure error
 	for key, ids := range held {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(failure, err)
+		}
 		err := b.standing(ctx, key.who, ActionHold, key.resource)
-		if err == nil || errors.Is(err, ErrPolicyUnavailable) {
+		if ctx.Err() != nil {
+			return errors.Join(failure, ctx.Err())
+		}
+		if errors.Is(err, ErrPolicyUnavailable) {
+			failure = errors.Join(failure, err)
+			continue
+		}
+		if err == nil {
 			continue
 		}
 		for _, id := range ids {
 			b.release(id, "revoked")
 		}
 	}
+	return failure
 }
 
 // standingOf decides ActionHold again on id's resource for who before Renew
-// extends id, when id is a lease who acquired and the book has a Standing
-// policy; a connection-owned hold, a lease of another holder or no lease at
-// all needs no decision and reads nil. It decides outside the book's lock, as
-// every rights decision here is made.
+// extends id, when id is a lease who acquired; a connection-owned hold, a
+// lease of another holder or no lease at all needs no decision and reads nil.
+// A book without a Standing policy reads unavailable for an acquired lease.
+// It decides outside the book's lock, as every rights decision here is made.
 func (b *Book) standingOf(who Subject, id string) error {
-	if b.standing == nil {
-		return nil
-	}
 	b.mu.Lock()
 	live, ok := b.leases[id]
 	acquired := ok && !live.held && live.subject().same(who)
@@ -74,6 +91,9 @@ func (b *Book) standingOf(who Subject, id string) error {
 	b.mu.Unlock()
 	if !acquired {
 		return nil
+	}
+	if b.standing == nil {
+		return ErrPolicyUnavailable
 	}
 	return b.standing(context.Background(), who, ActionHold, resource)
 }

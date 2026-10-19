@@ -8,7 +8,7 @@ import (
 
 func TestSubjectFromPeerRequiresPeerAndProgramProof(t *testing.T) {
 	for name, peer := range map[string]*identity.Peer{
-		"nil peer": nil,
+		"nil peer":      nil,
 		"missing proof": {},
 	} {
 		t.Run(name, func(t *testing.T) {

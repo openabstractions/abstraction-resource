@@ -1,6 +1,6 @@
 // Package gpufault is a provider's GPU fault handling: it reads the
 // platform's driver-reset and standby records, stops every resident engine of
-// the attached holders when the driver resets, quarantines the request that
+// the holders attached to its Guard when the driver resets, quarantines the request that
 // was running, refuses new loads until the adapter is back and while the
 // machine is in Modern Standby, and keeps the machine awake through the wake
 // lease while GPU work runs (CONTRACT.md RES-G1..RES-G7).
@@ -59,6 +59,14 @@ type Event struct {
 	Kind   EventKind
 	At     time.Time
 	Source string
+	// Reason is a standby exit's Kernel-Power 507 Reason code; it is
+	// non-empty when the 507 carried EventData. Reason 52 was the presence
+	// sensor in the 2026-10-19 Caffeinate evidence
+	// (research/live-runs/2026-10-19-caffeinate-power.md).
+	// SleepDuration is the time asleep within standby (507
+	// SleepDurationInUs); it is zero when standby ended before sleep began.
+	Reason        string
+	SleepDuration time.Duration
 }
 
 // Records delivers platform records until ctx ends, first Watching once its
@@ -201,7 +209,13 @@ type Options struct {
 	State string
 	// Wake takes the wake lease while GPU work runs; nil takes none.
 	Wake WakeFunc
-	Now  func() time.Time
+	// Awake reports whether the machine is demonstrably awake now
+	// (PlatformAwake: the console display is on). A standby record never
+	// refuses work while Awake says true, and an Awake error admits the work
+	// with one log line through OnError. Nil trusts the standby records
+	// alone.
+	Awake func() (bool, error)
+	Now   func() time.Time
 	// OnFault receives each fault once its window closes: its log record
 	// and its Panel line (RES-G6).
 	OnFault func(Fault)
@@ -224,22 +238,35 @@ const (
 type Guard struct {
 	opts Options
 
-	mu         sync.Mutex
-	losers     []Loser
-	standby    bool
-	resetting  bool
-	lastReset  time.Time
-	resetGen   uint64
-	resetCh    chan struct{}
-	open       *Fault
-	faults     []Fault
-	quarantine map[string]*QuarantineEntry
-	stateSeen  stamp
+	mu      sync.Mutex
+	losers  []Loser
+	standby bool
+	// standbySource and standbyAt are the record that began standby, and
+	// standbyGen counts standby records.
+	standbySource string
+	standbyAt     time.Time
+	standbyGen    uint64
+	// awakeSaid is set once the standing standby record was set aside
+	// because the machine was awake or its state could not be read, so it
+	// is logged once. Each admission still reads the power state.
+	awakeSaid          bool
+	standbyRefusalSaid bool
+	resetting          bool
+	lastReset          time.Time
+	resetGen           uint64
+	resetCh            chan struct{}
+	open               *Fault
+	faults             []Fault
+	quarantine         map[string]*QuarantineEntry
+	stateSeen          stamp
 	// damaged is where a damaged quarantine file was moved when the Guard
 	// was made, or "".
 	damaged string
 	blind   error
 	busy    int
+	// why names the first running work while busy, for the report of a
+	// standby that began under the wake lease.
+	why     string
 	release func()
 }
 
@@ -274,7 +301,7 @@ func New(opts Options) (*Guard, error) {
 		opts.Resubscribe = defaultResubscribe
 	}
 	g := &Guard{opts: opts, resetCh: make(chan struct{}), quarantine: map[string]*QuarantineEntry{}}
-	entries, moved, damage, err := openState(opts.State, opts.Now())
+	entries, seen, moved, damage, err := openState(opts.State, opts.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -286,9 +313,7 @@ func New(opts Options) (*Guard, error) {
 		e := entries[i]
 		g.quarantine[e.Key] = &e
 	}
-	if opts.State != "" {
-		g.stateSeen = stateStamp(opts.State)
-	}
+	g.stateSeen = seen
 	return g, nil
 }
 
@@ -367,11 +392,23 @@ func (g *Guard) Report(ev Event) {
 	switch ev.Kind {
 	case StandbyEnter:
 		g.mu.Lock()
+		entered := !g.standby || g.awakeSaid
 		g.standby = true
+		g.standbySource, g.standbyAt, g.awakeSaid = ev.Source, ev.At, false
+		g.standbyRefusalSaid = false
+		g.standbyGen++
+		running, why := g.busy, g.why
 		g.mu.Unlock()
+		// The wake lease should hold standby off while GPU work runs. The
+		// running dispatch goes on: stopping an engine is itself a GPU
+		// transition (RES-G5).
+		if entered && running > 0 {
+			g.report(fmt.Errorf("gpufault: Modern Standby began while %s held the wake lease", why))
+		}
 	case StandbyExit:
 		g.mu.Lock()
 		g.standby = false
+		g.awakeSaid = false
 		g.mu.Unlock()
 	case Watching:
 		g.mu.Lock()
@@ -389,7 +426,7 @@ func (g *Guard) Report(ev Event) {
 	}
 }
 
-// reset stops every attached holder's components once per reset: records
+// reset stops every component of the Guard's holders once per reset: records
 // inside one Window of an open fault extend its settle and add no fault.
 func (g *Guard) reset(ev Event) {
 	g.mu.Lock()
@@ -471,14 +508,26 @@ func panelLine(f Fault) string {
 	}
 }
 
+// StandbySentence is the plain sentence a gpu:standby refusal carries.
+const StandbySentence = "The computer is going to sleep; try again when it's awake."
+
 // AdmitLoad refuses a new GPU load while the machine is in Modern Standby
 // (RES-G5), and after a reset until the settle passed and the probe found
 // the adapter back (RES-G4). A refusal is a *Refusal.
+//
+// Standby is a Kernel-Power 506 with no 507 after it while the machine is
+// not demonstrably awake (Options.Awake). Windows does not always write the
+// 507: on 2026-11-12 the owner's PC was in use for hours after a 506 at
+// 04:51 with no 507, and every local chat and picture read gpu:standby.
 func (g *Guard) AdmitLoad(ctx context.Context) error {
 	g.mu.Lock()
 	if g.standby {
+		source, at, gen := g.standbySource, g.standbyAt, g.standbyGen
 		g.mu.Unlock()
-		return &Refusal{Word: WordStandby, Detail: "the machine is in Modern Standby; GPU work starts once it wakes"}
+		if !g.awakeNow(source, at, gen) {
+			return &Refusal{Word: WordStandby, Detail: StandbySentence}
+		}
+		g.mu.Lock()
 	}
 	if !g.resetting {
 		g.mu.Unlock()
@@ -499,6 +548,45 @@ func (g *Guard) AdmitLoad(ctx context.Context) error {
 	}
 	g.mu.Unlock()
 	return nil
+}
+
+// awakeNow reports whether a standing standby record is set aside: the
+// machine is awake, or its state cannot be read (fail open). Either is logged
+// once per standby record. A display that turns off later refuses again.
+func (g *Guard) awakeNow(source string, at time.Time, gen uint64) bool {
+	if g.opts.Awake == nil {
+		return false
+	}
+	awake, err := g.opts.Awake()
+	when := ""
+	if !at.IsZero() {
+		when = " at " + at.Local().Format(time.RFC3339)
+	}
+	if err == nil && !awake {
+		g.mu.Lock()
+		logRefusal := g.standby && g.standbyGen == gen && !g.standbyRefusalSaid
+		if logRefusal {
+			g.standbyRefusalSaid = true
+		}
+		g.mu.Unlock()
+		if logRefusal {
+			g.report(fmt.Errorf("gpufault: %s%s has no exit record and the display is off; GPU load refused", source, when))
+		}
+		return false
+	}
+	g.mu.Lock()
+	current := g.standby && g.standbyGen == gen
+	said := g.awakeSaid || !current
+	g.awakeSaid = g.awakeSaid || current
+	g.mu.Unlock()
+	if !said {
+		if err != nil {
+			g.report(fmt.Errorf("gpufault: %s%s has no exit record and the machine's power state cannot be read (%v); GPU work goes on", source, when, err))
+		} else {
+			g.report(fmt.Errorf("gpufault: %s%s has no exit record and the display is on; the machine is awake and GPU work goes on", source, when))
+		}
+	}
+	return true
 }
 
 // AdmitRequest is AdmitLoad for one request, and refuses a fingerprint in
@@ -630,6 +718,9 @@ func (g *Guard) Busy(why string) (end func()) {
 	g.mu.Lock()
 	g.busy++
 	first := g.busy == 1
+	if first {
+		g.why = why
+	}
 	g.mu.Unlock()
 	if first && g.opts.Wake != nil {
 		release, err := g.opts.Wake(why)

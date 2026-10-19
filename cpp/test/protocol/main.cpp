@@ -11,6 +11,12 @@
 
 namespace wire = abstraction::resource;
 
+struct MalformedReply {
+    std::string exchange_frame(std::string_view) {
+        return R"({"version":1,"service":"abstraction.resource/table@1","method":"Resources","ok":true,"payload":{"value":{"outcome":"ok"}}})";
+    }
+};
+
 // This is a dispatcher fixture, not a production C++ server.
 struct FixtureTable : wire::Table {
     wire::ResourcesResult resources() override {
@@ -43,6 +49,19 @@ struct FixtureTable : wire::Table {
 };
 
 struct FixtureLeases : wire::Leases {
+    abstraction::rights::api::Subject last_subject;
+    wire::AcquireResult acquire_for(const abstraction::rights::api::Subject& subject,
+                                   const std::string& resource, const std::int64_t& amount,
+                                   const std::int64_t& wait) override {
+        last_subject = subject;
+        return acquire(resource, amount, wait);
+    }
+    wire::AcquireFreeResult acquire_free(const std::string& resource, const std::int64_t& amount) override {
+        wire::AcquireFreeResult result;
+        result.outcome = wire::AcquireFreeOutcome::Acquired;
+        result.lease = acquire(resource, amount, 0).lease;
+        return result;
+    }
     wire::AcquireResult acquire(const std::string& resource, const std::int64_t& amount, const std::int64_t&) override {
         wire::AcquireResult result;
         result.outcome = wire::AcquireOutcome::Acquired;
@@ -59,6 +78,12 @@ struct FixtureLeases : wire::Leases {
         wire::ProcessBindResult result;
         result.outcome = wire::ProcessBindOutcome::Unverifiable;
         return result;
+    }
+    wire::LeaseChangeResult label(const std::string&, const std::string&) override {
+        wire::LeaseChangeResult reply;
+        reply.outcome = wire::ResourceCallOutcome::Ok;
+        reply.change = wire::LeaseChange{};
+        return reply;
     }
     wire::LeaseChangeResult renew(const std::string&) override {
         wire::LeaseChange result;
@@ -135,6 +160,14 @@ int main() {
         auto acquired = leases_client.acquire("card:0", 4096, 0);
         require(acquired.outcome == wire::AcquireOutcome::Acquired, "acquire reports the typed outcome");
         require(acquired.lease.has_value() && acquired.lease->amount == 4096, "an acquired lease carries its amount");
+        abstraction::rights::api::Subject subject;
+        subject.account = "1000";
+        subject.program = "/fixture/requester";
+        auto delegated = leases_client.acquire_for(subject, "awake", 0, 0);
+        require(delegated.outcome == wire::AcquireOutcome::Acquired &&
+                leases_handler.last_subject.account == subject.account &&
+                leases_handler.last_subject.program == subject.program,
+                "AcquireFor carries the shared Rights subject through the generated client");
 
         auto renewed = leases_client.renew("lease-1");
         require(renewed.outcome == wire::ResourceCallOutcome::Ok && renewed.change.has_value() &&
@@ -163,8 +196,9 @@ int main() {
 
         bool missing_payload = false;
         try {
-            abstraction::resource::client::reply_data<wire::ResourceList>(
-                "Resources", wire::ResourceCallOutcome::Ok, std::nullopt);
+            MalformedReply transport;
+            wire::TableClient<MalformedReply> client(transport);
+            client.resources();
         } catch (const wire::ServiceError& error) {
             missing_payload = error.code == "invalid_result";
         }

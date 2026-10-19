@@ -23,14 +23,14 @@
           "abstraction.resource/leases@1"
         ],
         "disclosure": "Reserve lease; may ask holders to yield; wake inhibitor subject to platform.",
-        "lifecycle": "One scarce resource; attached-holder yield separately service-authorized.",
+        "lifecycle": "One scarce resource; asking an app's lease back is separately service-authorized.",
         "first_use": "none",
         "served": true
       },
       "label": "abstraction.resource/hold",
       "supported_selectors": [],
       "first_use_selectors": [],
-      "collection": "One scarce resource; attached-holder yield separately service-authorized.",
+      "collection": "One scarce resource; asking an app's lease back is separately service-authorized.",
       "all_effect": "",
       "request_type": "string (legacy exact resource)"
     },
@@ -70,15 +70,15 @@
         "enforced_by": [
           "abstraction.resource/leases@1"
         ],
-        "disclosure": "Request attached model holders to unload under the runtime own program host-specific yield decision.",
-        "lifecycle": "One attached host:\u003cname\u003e; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
+        "disclosure": "Ask an app's lease back under the runtime own program per-app yield decision; on with no rule, and a deny keeps that app's memory.",
+        "lifecycle": "One app's program as its lease names it; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
         "first_use": "none",
         "served": true
       },
       "label": "abstraction.resource/yield",
       "supported_selectors": [],
       "first_use_selectors": [],
-      "collection": "One attached host:\u003cname\u003e; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
+      "collection": "One app's program as its lease names it; runtime yieldPolicy is the receiving check. The app hold right supplies no runtime yield authority.",
       "all_effect": "",
       "request_type": "string (legacy exact resource)"
     }

@@ -7,24 +7,21 @@ import (
 	wire "github.com/openabstractions/abstraction-resource/go/abstraction/resource"
 )
 
-func TestCallResultPreservesTypedRefusalAndPayloadInvariant(t *testing.T) {
+func TestCallResultPreservesTypedRefusal(t *testing.T) {
 	tests := []struct {
 		name    string
 		outcome wire.ResourceCallOutcome
-		payload bool
 		code    wire.ServiceErrorCode
 	}{
-		{"ok", wire.ResourceCallOutcomeOk, true, ""},
-		{"forbidden", wire.ResourceCallOutcomeForbidden, false, wire.ServiceErrorCodeForbidden},
-		{"unavailable", wire.ResourceCallOutcomeUnavailable, false, wire.ServiceErrorCodePolicyUnavailable},
-		{"invalid", wire.ResourceCallOutcomeInvalid, false, wire.ServiceErrorCodeInvalidRequest},
-		{"unknown", wire.ResourceCallOutcomeUnknown, false, wire.ServiceErrorCode("unknown")},
-		{"missing ready payload", wire.ResourceCallOutcomeOk, false, wire.ServiceErrorCodeInvalidResult},
-		{"refusal with payload", wire.ResourceCallOutcomeForbidden, true, wire.ServiceErrorCodeInvalidResult},
+		{"ok", wire.ResourceCallOutcomeOk, ""},
+		{"forbidden", wire.ResourceCallOutcomeForbidden, wire.ServiceErrorCodeForbidden},
+		{"unavailable", wire.ResourceCallOutcomeUnavailable, wire.ServiceErrorCodePolicyUnavailable},
+		{"invalid", wire.ResourceCallOutcomeInvalid, wire.ServiceErrorCodeInvalidRequest},
+		{"unknown", wire.ResourceCallOutcomeUnknown, wire.ServiceErrorCode("unknown")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := callResultError("Holders", tt.outcome, tt.payload)
+			err := callResultError("Holders", tt.outcome)
 			if tt.code == "" {
 				if err != nil {
 					t.Fatal(err)

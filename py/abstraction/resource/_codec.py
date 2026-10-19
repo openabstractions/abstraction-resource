@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 import enum
 
+from abstraction.rights.api import _codec as _dependency_rights
+
 _HEX = b"0123456789abcdef"
 _WS = (0x20, 0x09, 0x0A, 0x0D)
 _SHORT = {0x22: b'\\"', 0x5C: b"\\\\", 0x08: b"\\b", 0x0C: b"\\f",
@@ -45,53 +47,9 @@ def _strs(out, v, depth):
 
 
 def _raw(out, s, depth):
-    b = s.encode("utf-8") if isinstance(s, str) else s
-    i, n = 0, len(b)
-    while i < n:
-        c = b[i]
-        if c in _WS:
-            i += 1
-        elif c == 0x22:
-            j = i + 1
-            while j < n:
-                if b[j] == 0x5C:
-                    j += 2
-                    continue
-                if b[j] == 0x22:
-                    j += 1
-                    break
-                j += 1
-            out += b[i:j]
-            i = j
-        elif c in (0x7B, 0x5B):
-            out.append(c)
-            i += 1
-            j = i
-            while j < n and b[j] in _WS:
-                j += 1
-            if j < n and b[j] in (0x7D, 0x5D):
-                out.append(b[j])
-                i = j + 1
-            else:
-                depth += 1
-                out += b"\n"
-                _pad(out, depth)
-        elif c in (0x7D, 0x5D):
-            depth -= 1
-            out += b"\n"
-            _pad(out, depth)
-            out.append(c)
-            i += 1
-        elif c == 0x2C:
-            out += b",\n"
-            _pad(out, depth)
-            i += 1
-        elif c == 0x3A:
-            out += b": "
-            i += 1
-        else:
-            out.append(c)
-            i += 1
+    # An opaque value's bytes as they are ([DEF-A3]).
+    # Whitespace around the value is not part of it.
+    out += (s.encode("utf-8") if isinstance(s, str) else bytes(s)).strip(bytes(_WS))
 
 
 def _rawmap(out, m, depth):
@@ -131,6 +89,8 @@ def _write_list(out, v, depth, enc):
         out += b"\n"
     _pad(out, depth)
     out += b"]"
+
+_Imported0 = _dependency_rights.Subject
 
 
 try:
@@ -247,7 +207,8 @@ class Holder:
 class ResourceState:
     """capacity is bytes, 0 when the instrument cannot say. held is the sum of
     verified amounts only. instrument names what measured: windows-gpu-counters,
-    linux-fdinfo, or none, in which case every holder is claimed."""
+    linux-fdinfo, metal-working-set, which measures capacity and no holder, or
+    none. Under metal-working-set or none every holder is claimed."""
 
     resource: str = ""
     capacity: int = 0
@@ -283,8 +244,10 @@ class ResourcesResult:
 @dataclasses.dataclass(kw_only=True)
 class Lease:
     """amount is the requested admission reservation, not a physical memory quota.
-    A lease not renewed by renew_by is released; the holder's bytes are then
-    reported as a holder without a lease until the instrument stops seeing them."""
+    A
+    [Lease](https://openabstractions.github.io/reference.html#concept-resource.lease)
+    not renewed by renew_by is released; the holder's bytes are then reported as
+    a holder without a lease until the instrument stops seeing them."""
 
     id: str = ""
     resource: str = ""
@@ -401,6 +364,14 @@ class _TableHoldersArguments:
 
 
 @dataclasses.dataclass(kw_only=True)
+class _LeasesAcquireForArguments:
+    subject: _dependency_rights.Subject = dataclasses.field(default_factory=_Imported0)
+    resource: str = ""
+    amount: int = 0
+    wait_ms: int = 0
+
+
+@dataclasses.dataclass(kw_only=True)
 class _LeasesAcquireArguments:
     resource: str = ""
     amount: int = 0
@@ -443,6 +414,12 @@ class _LeasesBindProcessArguments:
 
 
 @dataclasses.dataclass(kw_only=True)
+class _LeasesLabelArguments:
+    lease: str = ""
+    text: str = ""
+
+
+@dataclasses.dataclass(kw_only=True)
 class _ServiceFrame:
     version: int = 0
     service: str = ""
@@ -473,6 +450,11 @@ class _TableResourcesResult:
 @dataclasses.dataclass(kw_only=True)
 class _TableHoldersResult:
     value: HoldersResult = dataclasses.field(default_factory=HoldersResult)
+
+
+@dataclasses.dataclass(kw_only=True)
+class _LeasesAcquireForResult:
+    value: AcquireResult = dataclasses.field(default_factory=AcquireResult)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -508,6 +490,11 @@ class _LeasesAnswerResult:
 @dataclasses.dataclass(kw_only=True)
 class _LeasesBindProcessResult:
     value: ProcessBindResult = dataclasses.field(default_factory=ProcessBindResult)
+
+
+@dataclasses.dataclass(kw_only=True)
+class _LeasesLabelResult:
+    value: LeaseChangeResult = dataclasses.field(default_factory=LeaseChangeResult)
 
 
 def _write_holder(out, v, depth):
@@ -974,6 +961,44 @@ def _write_oa_table_holders_arguments(out, v, depth):
     out += b"}"
 
 
+def _write_oa_leases_acquire_for_arguments(out, v, depth):
+    if isinstance(v.resource, str):
+        _size = len(v.resource.encode("utf-8", "surrogatepass"))
+        if _size < 1 or _size > 1024: raise Refusal("bad_value", 0)
+    if isinstance(v.resource, str) and any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in v.resource): raise Refusal("bad_value", 0)
+    if type(v.amount) is not int: raise Refusal("wrong_type", 0)
+    if v.amount < 0 or v.amount > 9223372036854775807: raise Refusal("bad_value", 0)
+    if type(v.wait_ms) is not int: raise Refusal("wrong_type", 0)
+    if v.wait_ms < 0 or v.wait_ms > 120000: raise Refusal("bad_value", 0)
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "subject")
+    out += b": "
+    _write_oa_imported0(out, v.subject, depth + 1)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "resource")
+    out += b": "
+    _esc(out, v.resource)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "amount")
+    out += b": "
+    _num(out, v.amount)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "wait_ms")
+    out += b": "
+    _num(out, v.wait_ms)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
 def _write_oa_leases_acquire_arguments(out, v, depth):
     out += b"{"
     out += b"\n"
@@ -1101,6 +1126,28 @@ def _write_oa_leases_bind_process_arguments(out, v, depth):
     out += b"}"
 
 
+def _write_oa_leases_label_arguments(out, v, depth):
+    if isinstance(v.text, str):
+        _size = len(v.text.encode("utf-8", "surrogatepass"))
+        if _size > 200: raise Refusal("bad_value", 0)
+    if isinstance(v.text, str) and any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in v.text): raise Refusal("bad_value", 0)
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "lease")
+    out += b": "
+    _esc(out, v.lease)
+    out += b","
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "text")
+    out += b": "
+    _esc(out, v.text)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
 def _write_oa_service_frame(out, v, depth):
     out += b"{"
     out += b"\n"
@@ -1209,6 +1256,18 @@ def _write_oa_table_holders_result(out, v, depth):
     out += b"}"
 
 
+def _write_oa_leases_acquire_for_result(out, v, depth):
+    out += b"{"
+    out += b"\n"
+    _pad(out, depth + 1)
+    _esc(out, "value")
+    out += b": "
+    _write_acquire_result(out, v.value, depth + 1)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
 def _write_oa_leases_acquire_result(out, v, depth):
     out += b"{"
     out += b"\n"
@@ -1293,11 +1352,20 @@ def _write_oa_leases_bind_process_result(out, v, depth):
     out += b"}"
 
 
-def encode(v):
-    out = bytearray()
-    _write_resource_state(out, v, 0)
+def _write_oa_leases_label_result(out, v, depth):
+    out += b"{"
     out += b"\n"
-    return bytes(out)
+    _pad(out, depth + 1)
+    _esc(out, "value")
+    out += b": "
+    _write_lease_change_result(out, v.value, depth + 1)
+    out += b"\n"
+    _pad(out, depth)
+    out += b"}"
+
+
+def encode(v):
+    return encode_resource_state(v)
 
 
 _QUOTE, _BACKSLASH, _COLON, _COMMA = 0x22, 0x5C, 0x3A, 0x2C
@@ -1319,12 +1387,13 @@ class Refusal(ValueError):
 
 
 class _Reader:
-    __slots__ = ("buf", "pos", "depth")
+    __slots__ = ("buf", "pos", "depth", "limit")
 
     def __init__(self, buf):
         self.buf = buf
         self.pos = 0
         self.depth = 0
+        self.limit = _DEPTH_LIMIT
 
     def refuse(self, word):
         return Refusal(word, self.pos)
@@ -1338,7 +1407,7 @@ class _Reader:
 
     def enter(self):
         self.depth += 1
-        if self.depth > _DEPTH_LIMIT:
+        if self.depth > self.limit:
             raise self.refuse("depth_exceeded")
 
     def digit(self):
@@ -2690,6 +2759,65 @@ def _read_oa_table_holders_arguments(r):
     return v
 
 
+def _read_oa_leases_acquire_for_arguments(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesAcquireForArguments()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "subject":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.subject = _read_oa_imported0(r)
+            elif key == "resource":
+                if seen & 2:
+                    raise r.refuse("duplicate_field")
+                seen |= 2
+                v.resource = r.string()
+            elif key == "amount":
+                if seen & 4:
+                    raise r.refuse("duplicate_field")
+                seen |= 4
+                v.amount = r.integer(-9223372036854775808, 9223372036854775807)
+            elif key == "wait_ms":
+                if seen & 8:
+                    raise r.refuse("duplicate_field")
+                seen |= 8
+                v.wait_ms = r.integer(-9223372036854775808, 9223372036854775807)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 15 != 15:
+        raise r.refuse("missing_field")
+    _size = len(v.resource.encode("utf-8", "surrogatepass"))
+    if _size < 1 or _size > 1024: raise r.refuse("bad_value")
+    if any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in v.resource): raise r.refuse("bad_value")
+    if v.amount < 0 or v.amount > 9223372036854775807: raise r.refuse("bad_value")
+    if v.wait_ms < 0 or v.wait_ms > 120000: raise r.refuse("bad_value")
+    return v
+
+
 def _read_oa_leases_acquire_arguments(r):
     if r.at() != _LBRACE:
         raise r.refuse("wrong_type")
@@ -3002,6 +3130,53 @@ def _read_oa_leases_bind_process_arguments(r):
     return v
 
 
+def _read_oa_leases_label_arguments(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesLabelArguments()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "lease":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.lease = r.string()
+            elif key == "text":
+                if seen & 2:
+                    raise r.refuse("duplicate_field")
+                seen |= 2
+                v.text = r.string()
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 3 != 3:
+        raise r.refuse("missing_field")
+    _size = len(v.text.encode("utf-8", "surrogatepass"))
+    if _size > 200: raise r.refuse("bad_value")
+    if any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in v.text): raise r.refuse("bad_value")
+    return v
+
+
 def _read_oa_service_frame(r):
     if r.at() != _LBRACE:
         raise r.refuse("wrong_type")
@@ -3222,6 +3397,45 @@ def _read_oa_table_holders_result(r):
                     raise r.refuse("duplicate_field")
                 seen |= 1
                 v.value = _read_holders_result(r)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 1 != 1:
+        raise r.refuse("missing_field")
+    return v
+
+
+def _read_oa_leases_acquire_for_result(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesAcquireForResult()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "value":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.value = _read_acquire_result(r)
             else:
                 raise r.refuse("unknown_field")
             r.ws()
@@ -3510,6 +3724,45 @@ def _read_oa_leases_bind_process_result(r):
     return v
 
 
+def _read_oa_leases_label_result(r):
+    if r.at() != _LBRACE:
+        raise r.refuse("wrong_type")
+    r.enter()
+    r.pos += 1
+    v = _LeasesLabelResult()
+    seen = 0
+    r.ws()
+    if r.at() != _RBRACE:
+        while True:
+            r.ws()
+            if r.at() != _QUOTE:
+                raise r.refuse("malformed")
+            key = r.string()
+            r.ws()
+            if r.at() != _COLON:
+                raise r.refuse("malformed")
+            r.pos += 1
+            r.ws()
+            if key == "value":
+                if seen & 1:
+                    raise r.refuse("duplicate_field")
+                seen |= 1
+                v.value = _read_lease_change_result(r)
+            else:
+                raise r.refuse("unknown_field")
+            r.ws()
+            if r.at() != _COMMA:
+                break
+            r.pos += 1
+    if r.at() != _RBRACE:
+        raise r.refuse("malformed")
+    r.pos += 1
+    r.depth -= 1
+    if seen & 1 != 1:
+        raise r.refuse("missing_field")
+    return v
+
+
 def decode(data):
     r = _Reader(bytes(data))
     r.ws()
@@ -3520,9 +3773,55 @@ def decode(data):
     return v
 
 
+_JSON_RECORDS = {
+    Holder: (_write_holder, _read_holder),
+    ResourceState: (_write_resource_state, _read_resource_state),
+    HoldersResult: (_write_holders_result, _read_holders_result),
+    ResourceList: (_write_resource_list, _read_resource_list),
+    ResourcesResult: (_write_resources_result, _read_resources_result),
+    Lease: (_write_lease, _read_lease),
+    YieldRecord: (_write_yield_record, _read_yield_record),
+    AcquireResult: (_write_acquire_result, _read_acquire_result),
+    AcquireFreeResult: (_write_acquire_free_result, _read_acquire_free_result),
+    YieldRequest: (_write_yield_request, _read_yield_request),
+    YieldPage: (_write_yield_page, _read_yield_page),
+    ObserveResult: (_write_observe_result, _read_observe_result),
+    AnswerResult: (_write_answer_result, _read_answer_result),
+    AnswerCallResult: (_write_answer_call_result, _read_answer_call_result),
+    LeaseChange: (_write_lease_change, _read_lease_change),
+    LeaseChangeResult: (_write_lease_change_result, _read_lease_change_result),
+    ProcessBindResult: (_write_process_bind_result, _read_process_bind_result),
+}
+
+
+def to_json(value):
+    """One record as JSON bytes, laid out as this module's documents are and
+    without the document terminator."""
+    codec = _JSON_RECORDS.get(type(value))
+    if codec is None:
+        raise TypeError("to_json takes a record of this module, not %s" % type(value).__name__)
+    out = bytearray()
+    codec[0](out, value, 0)
+    return bytes(out)
+
+
+def from_json(kind, data):
+    """Read one record of class kind from data; a refused input raises Refusal."""
+    codec = _JSON_RECORDS.get(kind)
+    if codec is None:
+        raise TypeError("from_json takes a record class of this module, not %r" % (kind,))
+    r = _Reader(bytes(data))
+    r.ws()
+    v = codec[1](r)
+    r.ws()
+    if r.pos < len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
 # _REFUSALS is in the order two of them are chosen between.
 
-_REFUSALS = ["malformed", "bad_string", "number_spelling", "wrong_type", "bad_timestamp", "depth_exceeded", "duplicate_key", "duplicate_field", "unknown_field", "missing_field", "bad_enum", "trailing_bytes"]
+_REFUSALS = ["malformed", "bad_string", "number_spelling", "wrong_type", "bad_timestamp", "depth_exceeded", "duplicate_key", "duplicate_field", "unknown_field", "missing_field", "bad_enum", "bad_value", "trailing_bytes"]
 
 
 def _refusal_rank(word):
@@ -3595,6 +3894,11 @@ def _service_check(kind, value, depth=0):
             for key, item in value.items():
                 _service_check("string", key, depth + 1)
                 _service_check(kind[11:-1], item, depth + 1)
+    elif kind in _NAMED_IMPORTED:
+        cls, check = _NAMED_IMPORTED[kind]
+        valid = isinstance(value, cls)
+        if valid:
+            check(value, depth, _DEPTH_LIMIT)
     else:
         cls, fields = _SERVICE_RECORDS[kind]
         valid = isinstance(value, cls)
@@ -3660,6 +3964,7 @@ _SERVICE_RECORDS = {
     "ProcessBindResult": (ProcessBindResult, [("outcome", "enum", "never"), ]),
     "OATableResourcesArguments": (_TableResourcesArguments, []),
     "OATableHoldersArguments": (_TableHoldersArguments, [("resource", "string", "never"), ("fresh", "bool", "never"), ]),
+    "OALeasesAcquireForArguments": (_LeasesAcquireForArguments, [("subject", "OAImported0", "never"), ("resource", "string", "never"), ("amount", "i64", "never"), ("wait_ms", "i64", "never"), ]),
     "OALeasesAcquireArguments": (_LeasesAcquireArguments, [("resource", "string", "never"), ("amount", "i64", "never"), ("wait_ms", "i64", "never"), ]),
     "OALeasesAcquireFreeArguments": (_LeasesAcquireFreeArguments, [("resource", "string", "never"), ("amount", "i64", "never"), ]),
     "OALeasesRenewArguments": (_LeasesRenewArguments, [("lease", "string", "never"), ]),
@@ -3667,11 +3972,13 @@ _SERVICE_RECORDS = {
     "OALeasesObserveArguments": (_LeasesObserveArguments, [("cursor", "string", "never"), ("wait_ms", "i64", "never"), ]),
     "OALeasesAnswerArguments": (_LeasesAnswerArguments, [("request", "string", "never"), ("answer", "enum", "never"), ("reason", "string", "never"), ]),
     "OALeasesBindProcessArguments": (_LeasesBindProcessArguments, [("lease", "string", "never"), ("pid", "i64", "never"), ]),
+    "OALeasesLabelArguments": (_LeasesLabelArguments, [("lease", "string", "never"), ("text", "string", "never"), ]),
     "OAServiceFrame": (_ServiceFrame, [("version", "i32", "never"), ("service", "string", "never"), ("method", "string", "never"), ("arguments", "json", "never"), ]),
     "OAServiceReply": (_ServiceReply, [("version", "i32", "never"), ("service", "string", "never"), ("method", "string", "never"), ("ok", "bool", "never"), ("payload", "json", "never"), ]),
     "OAServiceError": (_ServiceError, [("code", "string", "never"), ("message", "string", "never"), ]),
     "OATableResourcesResult": (_TableResourcesResult, [("value", "ResourcesResult", "never"), ]),
     "OATableHoldersResult": (_TableHoldersResult, [("value", "HoldersResult", "never"), ]),
+    "OALeasesAcquireForResult": (_LeasesAcquireForResult, [("value", "AcquireResult", "never"), ]),
     "OALeasesAcquireResult": (_LeasesAcquireResult, [("value", "AcquireResult", "never"), ]),
     "OALeasesAcquireFreeResult": (_LeasesAcquireFreeResult, [("value", "AcquireFreeResult", "never"), ]),
     "OALeasesRenewResult": (_LeasesRenewResult, [("value", "LeaseChangeResult", "never"), ]),
@@ -3679,6 +3986,7 @@ _SERVICE_RECORDS = {
     "OALeasesObserveResult": (_LeasesObserveResult, [("value", "ObserveResult", "never"), ]),
     "OALeasesAnswerResult": (_LeasesAnswerResult, [("value", "AnswerCallResult", "never"), ]),
     "OALeasesBindProcessResult": (_LeasesBindProcessResult, [("value", "ProcessBindResult", "never"), ]),
+    "OALeasesLabelResult": (_LeasesLabelResult, [("value", "LeaseChangeResult", "never"), ]),
 }
 
 
@@ -3715,6 +4023,8 @@ class TableClient(Table):
         _request = _service_request("abstraction.resource/table@1", "Resources", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/table@1", "Resources")
         _result = _service_decode(_read_oa_table_resources_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.list is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def holders(self, resource: str, fresh: bool) -> HoldersResult:
@@ -3728,16 +4038,28 @@ class TableClient(Table):
         _request = _service_request("abstraction.resource/table@1", "Holders", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/table@1", "Holders")
         _result = _service_decode(_read_oa_table_holders_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.state is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
 
 class Leases:
-    """Leases on a scarce resource, asked back on demand. A holder that predates OA
-    is an attached holder: the service yields on its behalf through the host's
-    own mechanism (LM Studio unload, Ollama keep_alive 0, ComfyUI free) and
-    records the result as if answered. Every ask, yield and refusal is a record
-    with the asker, the holder, the amount and the time. Version 1 kills nothing
-    and boosts nothing."""
+    """[Leases](https://openabstractions.github.io/reference.html#concept-resource.leases)
+    on a scarce resource, asked back on demand. An app running OA's integration
+    holds leases; memory no lease covers is foreign, measured and never asked to
+    yield. Every ask, yield and refusal is a record with the asker, the holder,
+    the amount and the time. Version 1 kills nothing and boosts nothing."""
+
+    def acquire_for(self, subject: _dependency_rights.Subject, resource: str, amount: int, wait_ms: int) -> AcquireResult:
+        """Acquire under the original authenticated job owner's existing rule. Only
+        an explicitly designated native enforcer of the receiving account may
+        assert subject; this record supplies no proof or authority. The service
+        decides abstraction.resource/hold for that subject, records the lease
+        under it, and permits the acquiring designated process to maintain it
+        through Renew and Release. Ordinary callers, cross-account assertions
+        and invalid native program subjects are refused. Existing Acquire
+        remains bound to its direct caller."""
+        raise NotImplementedError
 
     def acquire(self, resource: str, amount: int, wait_ms: int) -> AcquireResult:
         """Ask to reserve amount bytes for admission of the bound caller, waiting
@@ -3773,8 +4095,7 @@ class Leases:
     def observe(self, cursor: str, wait_ms: int) -> ObserveResult:
         """Yield requests addressed to the bound caller since cursor, waiting up to
         wait_ms (0..30000) for one. Each request names the lease to yield. A
-        holder that never observes is asked through its adapter when the service
-        has one, and is otherwise recorded as unanswered."""
+        holder that never observes is recorded as unanswered."""
         raise NotImplementedError
 
     def answer(self, request: str, answer: YieldAnswer | None, reason: str) -> AnswerCallResult:
@@ -3791,12 +4112,40 @@ class Leases:
         live lease."""
         raise NotImplementedError
 
+    def label(self, lease: str, text: str) -> LeaseChangeResult:
+        """Name what the bound caller's own lease holds for a person reading the
+        machine's memory, written as app: model. text is at most 200 bytes on
+        one line. The label is for display and the audit and carries no
+        authority. An empty text clears it, and a reader then shows the
+        program's name. applied false retains the idempotent result for a lease
+        not held by the caller."""
+        raise NotImplementedError
+
 
 class LeasesClient(Leases):
     """Calls abstraction.resource/leases@1 through a transport that exchanges frames."""
 
     def __init__(self, transport):
         self._transport = transport
+
+    def acquire_for(self, subject: _dependency_rights.Subject, resource: str, amount: int, wait_ms: int) -> AcquireResult:
+        _service_check("OAImported0", subject)
+        _service_check("string", resource)
+        _service_check("i64", amount)
+        _service_check("i64", wait_ms)
+        _args = _LeasesAcquireForArguments()
+        _args.subject = subject
+        _args.resource = resource
+        _args.amount = amount
+        _args.wait_ms = wait_ms
+        _arguments = _service_encode(_write_oa_leases_acquire_for_arguments, _args, 1)
+        _service_decode(_read_oa_leases_acquire_for_arguments, _arguments, 1)
+        _request = _service_request("abstraction.resource/leases@1", "AcquireFor", _arguments)
+        _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "AcquireFor")
+        _result = _service_decode(_read_oa_leases_acquire_for_result, _payload, 1)
+        if (_result.value.outcome == "acquired") != (_result.value.lease is not None):
+            raise ServiceError("invalid_result", "")
+        return _result.value
 
     def acquire(self, resource: str, amount: int, wait_ms: int) -> AcquireResult:
         _service_check("string", resource)
@@ -3811,6 +4160,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Acquire", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Acquire")
         _result = _service_decode(_read_oa_leases_acquire_result, _payload, 1)
+        if (_result.value.outcome == "acquired") != (_result.value.lease is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def acquire_free(self, resource: str, amount: int) -> AcquireFreeResult:
@@ -3824,6 +4175,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "AcquireFree", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "AcquireFree")
         _result = _service_decode(_read_oa_leases_acquire_free_result, _payload, 1)
+        if (_result.value.outcome == "acquired") != (_result.value.lease is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def renew(self, lease: str) -> LeaseChangeResult:
@@ -3835,6 +4188,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Renew", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Renew")
         _result = _service_decode(_read_oa_leases_renew_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.change is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def release(self, lease: str) -> LeaseChangeResult:
@@ -3846,6 +4201,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Release", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Release")
         _result = _service_decode(_read_oa_leases_release_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.change is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def observe(self, cursor: str, wait_ms: int) -> ObserveResult:
@@ -3859,6 +4216,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Observe", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Observe")
         _result = _service_decode(_read_oa_leases_observe_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.page is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def answer(self, request: str, answer: YieldAnswer | None, reason: str) -> AnswerCallResult:
@@ -3874,6 +4233,8 @@ class LeasesClient(Leases):
         _request = _service_request("abstraction.resource/leases@1", "Answer", _arguments)
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Answer")
         _result = _service_decode(_read_oa_leases_answer_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.answer is not None):
+            raise ServiceError("invalid_result", "")
         return _result.value
 
     def bind_process(self, lease: str, pid: int) -> ProcessBindResult:
@@ -3888,3 +4249,781 @@ class LeasesClient(Leases):
         _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "BindProcess")
         _result = _service_decode(_read_oa_leases_bind_process_result, _payload, 1)
         return _result.value
+
+    def label(self, lease: str, text: str) -> LeaseChangeResult:
+        _service_check("string", lease)
+        _service_check("string", text)
+        _args = _LeasesLabelArguments()
+        _args.lease = lease
+        _args.text = text
+        _arguments = _service_encode(_write_oa_leases_label_arguments, _args, 1)
+        _service_decode(_read_oa_leases_label_arguments, _arguments, 1)
+        _request = _service_request("abstraction.resource/leases@1", "Label", _arguments)
+        _payload = _service_response(self._transport.exchange_frame(_request), "abstraction.resource/leases@1", "Label")
+        _result = _service_decode(_read_oa_leases_label_result, _payload, 1)
+        if (_result.value.outcome == "ok") != (_result.value.change is not None):
+            raise ServiceError("invalid_result", "")
+        return _result.value
+
+
+def _write_oa_imported0(out, v, depth):
+    try:
+        out += _dependency_rights._encode_subject_at(v, depth)
+    except _dependency_rights.Refusal as e:
+        raise Refusal(e.word, e.offset) from e
+
+
+def _read_oa_imported0(r):
+    try:
+        v, n = _dependency_rights._decode_subject_at(r.buf[r.pos:], r.depth, r.limit)
+    except _dependency_rights.Refusal as e:
+        raise Refusal(e.word, r.pos + e.offset) from e
+    r.pos += n
+    return v
+
+
+_NAMED_IMPORTED = {}
+
+
+def _check_oa_imported0(v, depth, limit):
+    try:
+        _dependency_rights._check_subject(v, depth, limit)
+    except _dependency_rights.Refusal as e:
+        raise Refusal(e.word, e.offset) from e
+
+
+_NAMED_IMPORTED["OAImported0"] = (_Imported0, _check_oa_imported0)
+
+_NAMED_RECORDS = {
+    "Holder": (Holder, [("program", "string", "never"), ("account", "string", "never"), ("amount", "i64", "never"), ("evidence", "enum", "never"), ("lease", "string", "zero"), ("grant", "string", "zero"), ("since", "string", "zero"), ("detail", "string", "zero"), ]),
+    "ResourceState": (ResourceState, [("resource", "string", "never"), ("capacity", "i64", "never"), ("held", "i64", "never"), ("holders", "list<Holder>", "never"), ("observed", "string", "never"), ("instrument", "string", "never"), ]),
+    "HoldersResult": (HoldersResult, [("outcome", "enum", "never"), ("state", "ResourceState", "absent"), ]),
+    "ResourceList": (ResourceList, [("resources", "list<string>", "never"), ("observed", "string", "never"), ]),
+    "ResourcesResult": (ResourcesResult, [("outcome", "enum", "never"), ("list", "ResourceList", "absent"), ]),
+    "Lease": (Lease, [("id", "string", "never"), ("resource", "string", "never"), ("amount", "i64", "never"), ("since", "string", "never"), ("renew_by", "string", "never"), ]),
+    "YieldRecord": (YieldRecord, [("holder", "string", "never"), ("amount", "i64", "never"), ("answer", "string", "never"), ("took_ms", "i64", "never"), ]),
+    "AcquireResult": (AcquireResult, [("outcome", "enum", "never"), ("lease", "Lease", "absent"), ("asked", "list<YieldRecord>", "never"), ]),
+    "AcquireFreeResult": (AcquireFreeResult, [("outcome", "enum", "never"), ("lease", "Lease", "absent"), ("asked", "list<YieldRecord>", "never"), ]),
+    "YieldRequest": (YieldRequest, [("id", "string", "never"), ("resource", "string", "never"), ("amount", "i64", "never"), ("reason", "string", "never"), ("at", "string", "never"), ("lease", "string", "never"), ]),
+    "YieldPage": (YieldPage, [("requests", "list<YieldRequest>", "never"), ("next", "string", "never"), ]),
+    "ObserveResult": (ObserveResult, [("outcome", "enum", "never"), ("page", "YieldPage", "absent"), ]),
+    "AnswerResult": (AnswerResult, [("recorded", "bool", "never"), ]),
+    "AnswerCallResult": (AnswerCallResult, [("outcome", "enum", "never"), ("answer", "AnswerResult", "absent"), ]),
+    "LeaseChange": (LeaseChange, [("applied", "bool", "never"), ("lease", "Lease", "absent"), ]),
+    "LeaseChangeResult": (LeaseChangeResult, [("outcome", "enum", "never"), ("change", "LeaseChange", "absent"), ]),
+    "ProcessBindResult": (ProcessBindResult, [("outcome", "enum", "never"), ]),
+}
+
+
+def _named_check(kind, value, depth=0, limit=_DEPTH_LIMIT):
+    # Python coercions must not silently change typed service arguments.
+    if depth >= limit and (kind.startswith(("list<", "map<")) or kind in _NAMED_RECORDS):
+        raise Refusal("depth_exceeded", 0)
+    if kind == "binary":
+        valid = type(value) is bytes
+    elif kind == "string":
+        valid = type(value) is str
+    elif kind == "enum":
+        valid = value is None or isinstance(value, str)
+    elif kind in ("i32", "i64"):
+        valid = type(value) is int
+        if valid:
+            limit = 1 << (31 if kind == "i32" else 63)
+            if not -limit <= value < limit:
+                raise Refusal("number_spelling", 0)
+    elif kind == "bool":
+        valid = type(value) is bool
+    elif kind == "json":
+        valid = isinstance(value, (str, bytes, bytearray, memoryview))
+    elif kind.startswith("list<"):
+        valid = type(value) is list
+        if valid:
+            for item in value:
+                _named_check(kind[5:-1], item, depth + 1, limit)
+    elif kind.startswith("map<string,"):
+        valid = type(value) is dict
+        if valid:
+            for key, item in value.items():
+                _named_check("string", key, depth + 1, limit)
+                _named_check(kind[11:-1], item, depth + 1, limit)
+    elif kind in _NAMED_IMPORTED:
+        cls, check = _NAMED_IMPORTED[kind]
+        valid = isinstance(value, cls)
+        if valid:
+            check(value, depth, limit)
+    else:
+        cls, fields = _NAMED_RECORDS[kind]
+        valid = isinstance(value, cls)
+        if valid:
+            for name, field_kind, omit in fields:
+                if not hasattr(value, name):
+                    raise Refusal("missing_field", 0)
+                item = getattr(value, name)
+                if omit == "absent" and item is None:
+                    continue
+                _named_check(field_kind, item, depth + 1, limit)
+    if not valid:
+        raise Refusal("wrong_type", 0)
+
+
+def _check_holder(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("Holder", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_resource_state(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("ResourceState", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_holders_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("HoldersResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_resource_list(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("ResourceList", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_resources_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("ResourcesResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_lease(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("Lease", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_yield_record(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("YieldRecord", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_acquire_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("AcquireResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_acquire_free_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("AcquireFreeResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_yield_request(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("YieldRequest", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_yield_page(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("YieldPage", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_observe_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("ObserveResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_answer_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("AnswerResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_answer_call_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("AnswerCallResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_lease_change(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("LeaseChange", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_lease_change_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("LeaseChangeResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _check_process_bind_result(v, depth=0, limit=_DEPTH_LIMIT):
+    _named_check("ProcessBindResult", v, depth, min(limit, _DEPTH_LIMIT))
+
+
+def _decode_holder_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_holder(r)
+    return v, r.pos
+
+
+def _encode_holder_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_holder(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_holder(out, v, depth)
+    _decode_holder_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_holder(v):
+    return _encode_holder_at(v, 0) + "\n".encode()
+
+
+def decode_holder(data):
+    v, n = _decode_holder_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_resource_state_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_resource_state(r)
+    return v, r.pos
+
+
+def _encode_resource_state_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_resource_state(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_resource_state(out, v, depth)
+    _decode_resource_state_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_resource_state(v):
+    return _encode_resource_state_at(v, 0) + "\n".encode()
+
+
+def decode_resource_state(data):
+    v, n = _decode_resource_state_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_holders_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_holders_result(r)
+    return v, r.pos
+
+
+def _encode_holders_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_holders_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_holders_result(out, v, depth)
+    _decode_holders_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_holders_result(v):
+    return _encode_holders_result_at(v, 0) + "\n".encode()
+
+
+def decode_holders_result(data):
+    v, n = _decode_holders_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_resource_list_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_resource_list(r)
+    return v, r.pos
+
+
+def _encode_resource_list_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_resource_list(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_resource_list(out, v, depth)
+    _decode_resource_list_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_resource_list(v):
+    return _encode_resource_list_at(v, 0) + "\n".encode()
+
+
+def decode_resource_list(data):
+    v, n = _decode_resource_list_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_resources_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_resources_result(r)
+    return v, r.pos
+
+
+def _encode_resources_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_resources_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_resources_result(out, v, depth)
+    _decode_resources_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_resources_result(v):
+    return _encode_resources_result_at(v, 0) + "\n".encode()
+
+
+def decode_resources_result(data):
+    v, n = _decode_resources_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_lease_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_lease(r)
+    return v, r.pos
+
+
+def _encode_lease_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_lease(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_lease(out, v, depth)
+    _decode_lease_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_lease(v):
+    return _encode_lease_at(v, 0) + "\n".encode()
+
+
+def decode_lease(data):
+    v, n = _decode_lease_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_yield_record_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_yield_record(r)
+    return v, r.pos
+
+
+def _encode_yield_record_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_yield_record(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_yield_record(out, v, depth)
+    _decode_yield_record_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_yield_record(v):
+    return _encode_yield_record_at(v, 0) + "\n".encode()
+
+
+def decode_yield_record(data):
+    v, n = _decode_yield_record_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_acquire_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_acquire_result(r)
+    return v, r.pos
+
+
+def _encode_acquire_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_acquire_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_acquire_result(out, v, depth)
+    _decode_acquire_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_acquire_result(v):
+    return _encode_acquire_result_at(v, 0) + "\n".encode()
+
+
+def decode_acquire_result(data):
+    v, n = _decode_acquire_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_acquire_free_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_acquire_free_result(r)
+    return v, r.pos
+
+
+def _encode_acquire_free_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_acquire_free_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_acquire_free_result(out, v, depth)
+    _decode_acquire_free_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_acquire_free_result(v):
+    return _encode_acquire_free_result_at(v, 0) + "\n".encode()
+
+
+def decode_acquire_free_result(data):
+    v, n = _decode_acquire_free_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_yield_request_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_yield_request(r)
+    return v, r.pos
+
+
+def _encode_yield_request_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_yield_request(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_yield_request(out, v, depth)
+    _decode_yield_request_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_yield_request(v):
+    return _encode_yield_request_at(v, 0) + "\n".encode()
+
+
+def decode_yield_request(data):
+    v, n = _decode_yield_request_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_yield_page_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_yield_page(r)
+    return v, r.pos
+
+
+def _encode_yield_page_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_yield_page(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_yield_page(out, v, depth)
+    _decode_yield_page_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_yield_page(v):
+    return _encode_yield_page_at(v, 0) + "\n".encode()
+
+
+def decode_yield_page(data):
+    v, n = _decode_yield_page_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_observe_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_observe_result(r)
+    return v, r.pos
+
+
+def _encode_observe_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_observe_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_observe_result(out, v, depth)
+    _decode_observe_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_observe_result(v):
+    return _encode_observe_result_at(v, 0) + "\n".encode()
+
+
+def decode_observe_result(data):
+    v, n = _decode_observe_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_answer_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_answer_result(r)
+    return v, r.pos
+
+
+def _encode_answer_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_answer_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_answer_result(out, v, depth)
+    _decode_answer_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_answer_result(v):
+    return _encode_answer_result_at(v, 0) + "\n".encode()
+
+
+def decode_answer_result(data):
+    v, n = _decode_answer_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_answer_call_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_answer_call_result(r)
+    return v, r.pos
+
+
+def _encode_answer_call_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_answer_call_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_answer_call_result(out, v, depth)
+    _decode_answer_call_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_answer_call_result(v):
+    return _encode_answer_call_result_at(v, 0) + "\n".encode()
+
+
+def decode_answer_call_result(data):
+    v, n = _decode_answer_call_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_lease_change_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_lease_change(r)
+    return v, r.pos
+
+
+def _encode_lease_change_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_lease_change(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_lease_change(out, v, depth)
+    _decode_lease_change_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_lease_change(v):
+    return _encode_lease_change_at(v, 0) + "\n".encode()
+
+
+def decode_lease_change(data):
+    v, n = _decode_lease_change_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_lease_change_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_lease_change_result(r)
+    return v, r.pos
+
+
+def _encode_lease_change_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_lease_change_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_lease_change_result(out, v, depth)
+    _decode_lease_change_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_lease_change_result(v):
+    return _encode_lease_change_result_at(v, 0) + "\n".encode()
+
+
+def decode_lease_change_result(data):
+    v, n = _decode_lease_change_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v
+
+
+def _decode_process_bind_result_at(data, depth, limit):
+    r = _Reader(bytes(data))
+    if depth < 0 or limit < 1:
+        raise r.refuse("depth_exceeded")
+    r.depth = depth
+    r.limit = min(limit, _DEPTH_LIMIT)
+    r.ws()
+    v = _read_process_bind_result(r)
+    return v, r.pos
+
+
+def _encode_process_bind_result_at(v, depth):
+    if depth < 0 or depth >= _DEPTH_LIMIT:
+        raise _Reader(b"").refuse("depth_exceeded")
+    _check_process_bind_result(v, depth, _DEPTH_LIMIT)
+    out = bytearray()
+    _write_process_bind_result(out, v, depth)
+    _decode_process_bind_result_at(out, depth, _DEPTH_LIMIT)
+    return bytes(out)
+
+
+def encode_process_bind_result(v):
+    return _encode_process_bind_result_at(v, 0) + "\n".encode()
+
+
+def decode_process_bind_result(data):
+    v, n = _decode_process_bind_result_at(data, 0, _DEPTH_LIMIT)
+    r = _Reader(bytes(data))
+    r.pos = n
+    r.ws()
+    if r.pos != len(r.buf):
+        raise r.refuse("trailing_bytes")
+    return v

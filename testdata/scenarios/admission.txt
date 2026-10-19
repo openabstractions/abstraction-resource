@@ -1,0 +1,13 @@
+# Admission comes before the table: a program with no rule is not permitted,
+# and a decision point that cannot answer is unavailable, never a permit.
+measure card:0 capacity=24GiB
+acquire comfyui card:0 1GiB
+permit comfyui
+outage
+acquire comfyui card:0 1GiB
+restore
+acquire comfyui card:0 1GiB
+
+# expect 2: not_permitted asked=none [RES-L1]
+# expect 5: unavailable asked=none [RES-L1]
+# expect 7: acquired asked=none [RES-L1]

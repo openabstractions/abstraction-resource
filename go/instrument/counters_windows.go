@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -34,7 +35,7 @@ import (
 // cannot establish child process generation for lease credit. See counters.go
 // for instance summation.
 var (
-	pdh         = syscall.NewLazyDLL("pdh.dll")
+	pdh         = windows.NewLazySystemDLL("pdh.dll")
 	openQuery   = pdh.NewProc("PdhOpenQueryW")
 	addCounter  = pdh.NewProc("PdhAddEnglishCounterW")
 	collect     = pdh.NewProc("PdhCollectQueryData")
@@ -67,9 +68,37 @@ type gpuCounters struct{}
 func (gpuCounters) Name() string        { return NameWindowsGPUCounters }
 func (gpuCounters) Resources() []string { return []string{Card0} }
 
+// PoolOf reads card:0 as carved from memory: the counters sum every adapter,
+// and card and memory leases count against each other (CONTRACT.md RES-L2).
+func (gpuCounters) PoolOf(resource string) string { return sharedWithMemory(resource) }
+
 // PDH's GPU rows name a PID without the creation identity of the process
 // instance it measured. A later handle lookup cannot prove that identity.
 func (gpuCounters) VerifiedProcessSamples() bool { return false }
+
+// ChildUsage measures a bound child through a handle on that process
+// (adaptermemory_windows.go); the lease book credits it beside the PDH row.
+func (gpuCounters) ChildUsage(pid int, startID string) (int64, error) {
+	return ChildUsage(pid, startID)
+}
+
+// adapterCapacity is card:0's capacity, the largest hardware adapter's
+// GPU-visible memory. The adapter figure does not move while the machine
+// runs, so a successful read is kept; a failed one is tried again next time.
+var adapterCapacity = func() func() int64 {
+	var mu sync.Mutex
+	var known int64
+	return func() int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		if known <= 0 {
+			if bytes, err := AdapterCapacity(); err == nil {
+				known = bytes
+			}
+		}
+		return known
+	}
+}()
 
 func (g gpuCounters) Read(resource string) (Reading, error) {
 	at := time.Now()
@@ -89,7 +118,7 @@ func (g gpuCounters) Read(resource string) (Reading, error) {
 	for _, c := range named {
 		byPID[int(c.value)] = c.instance
 	}
-	out := Reading{Resource: resource, At: at}
+	out := Reading{Resource: resource, Capacity: adapterCapacity(), At: at}
 	for pid, v := range residentByPID(mem) {
 		if v < Threshold {
 			continue
@@ -136,6 +165,12 @@ func InspectProcess(pid int) (ProcessInfo, error) {
 	if err != nil || owner.User.Sid == nil {
 		return ProcessInfo{}, errors.New("process account unavailable")
 	}
+	var image string
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err == nil {
+		image = filepath.Clean(windows.UTF16ToString(buf[:n]))
+	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return ProcessInfo{}, err
@@ -149,7 +184,7 @@ func InspectProcess(pid int) (ProcessInfo, error) {
 		if entry.ProcessID == uint32(pid) {
 			return ProcessInfo{PID: pid, ParentPID: int(entry.ParentProcessID),
 				StartID: strconv.FormatInt(creation.Nanoseconds(), 10), Started: started,
-				Account: owner.User.Sid.String()}, nil
+				Account: owner.User.Sid.String(), Image: image}, nil
 		}
 		if err := windows.Process32Next(snapshot, &entry); err != nil {
 			return ProcessInfo{}, errors.New("process was not in the snapshot")

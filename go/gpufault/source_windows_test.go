@@ -36,3 +36,18 @@ func TestAdapterProbeReadsTheCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// RES-G5: the console display state is read without elevation through a
+// power setting notification; Windows reports the current state on
+// registration.
+func TestPlatformAwakeReadsTheDisplayState(t *testing.T) {
+	awake, err := PlatformAwake()
+	if err != nil {
+		t.Skipf("this session reports no display state: %v", err)
+	}
+	t.Logf("display on or dimmed: %v", awake)
+	again, err := PlatformAwake()
+	if err != nil || again != awake {
+		t.Fatalf("a second read gave %v, %v", again, err)
+	}
+}

@@ -28,24 +28,19 @@ pub fn env_endpoint() -> Option<String> {
 // Keep the compact client data API while retaining typed refusal codes from
 // service reply envelopes. The payload exists exactly for ok.
 fn reply_data<T, E>(operation: &'static str, outcome: ResourceCallOutcome, data: Option<T>) -> Result<T, CallError<E>> {
-    match (outcome, data) {
-        (ResourceCallOutcome::Ok, Some(value)) => Ok(value),
-        (ResourceCallOutcome::Ok, None) | (_, Some(_)) => Err(CallError::Service(ServiceError {
-            code: "invalid_result".into(),
-            message: format!("{operation} outcome/payload mismatch"),
-        })),
-        (outcome, None) => {
-            let code = match outcome {
-                ResourceCallOutcome::Unavailable => "policy_unavailable",
-                ResourceCallOutcome::Invalid => "invalid_request",
-                _ => outcome.as_str(),
-            };
-            Err(CallError::Service(ServiceError {
-                code: code.into(),
-                message: format!("{operation} outcome {}", outcome.as_str()),
-            }))
-        }
+    // The generated RPC client already validated the result postcondition.
+    if outcome == ResourceCallOutcome::Ok {
+        return Ok(data.expect("generated service result postcondition"));
     }
+    let code = match outcome {
+        ResourceCallOutcome::Unavailable => "policy_unavailable",
+        ResourceCallOutcome::Invalid => "invalid_request",
+        _ => outcome.as_str(),
+    };
+    Err(CallError::Service(ServiceError {
+        code: code.into(),
+        message: format!("{operation} outcome {}", outcome.as_str()),
+    }))
 }
 
 /// Read-only: who holds how much of a scarce resource on this machine,
@@ -88,9 +83,9 @@ impl<T: FrameTransport> TableClient<T> {
 }
 
 /// Leases on a scarce resource, asked back on demand (CONTRACT.md
-/// RES-L1..RES-L5, RES-A1). A holder that predates OA is an attached holder:
-/// the service yields on its behalf through the host's own mechanism. Version
-/// 1 kills nothing and boosts nothing.
+/// RES-L1..RES-L5, RES-A1). An app running OA's integration holds leases;
+/// memory no lease covers is foreign and never asked to yield. Version 1
+/// kills nothing and boosts nothing.
 pub struct LeasesClient<T> {
     transport: T,
 }
@@ -128,6 +123,18 @@ impl<T: FrameTransport> LeasesClient<T> {
         use wire::Leases;
         let reply = wire::LeasesClient::new(&self.transport).release(lease.into())?;
         reply_data("Release", reply.outcome, reply.change)
+    }
+    /// Names what the bound caller's own lease holds, as app: model, for a
+    /// person reading the machine's memory. At most 200 bytes on one line;
+    /// empty clears it.
+    pub fn label(
+        &self,
+        lease: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Result<LeaseChange, CallError<T::Error>> {
+        use wire::Leases;
+        let reply = wire::LeasesClient::new(&self.transport).label(lease.into(), text.into())?;
+        reply_data("Label", reply.outcome, reply.change)
     }
     /// Yield requests addressed to the bound caller since cursor, waiting up
     /// to wait_ms (0..30000) for one.

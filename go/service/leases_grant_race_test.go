@@ -10,78 +10,14 @@ import (
 	"github.com/openabstractions/abstraction-resource/go/instrument"
 )
 
-// pausedYield is an attached holder whose Yield blocks until the test closes
-// release, so two Acquire calls can be forced onto the very same yield before
-// either one's grant is decided (TODO.md resource §6; CONTRACT.md RES-L2's
-// added sentence). It frees the instrument's bytes exactly once: a second
-// concurrent caller finds the reduction already made and returns having
-// freed nothing further of its own, the way one physical unload frees bytes
-// once no matter how many askers are waiting on it.
-type pausedYield struct {
-	name    string
-	in      *fake
-	frees   int64
-	release chan struct{}
-	entered chan struct{}
-
-	mu      sync.Mutex
-	holding []string
-	done    bool
-}
-
-func newPausedYield(name, model string, frees int64, in *fake) *pausedYield {
-	return &pausedYield{name: name, in: in, frees: frees, holding: []string{model},
-		release: make(chan struct{}), entered: make(chan struct{}, 2)}
-}
-
-func (h *pausedYield) Holder() string   { return h.name }
-func (h *pausedYield) Resource() string { return instrument.Card0 }
-
-func (h *pausedYield) Holding(context.Context) ([]string, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.holding, nil
-}
-
-// Yield records that a caller has arrived, parks it until the test releases
-// it, and reduces the instrument once.
-func (h *pausedYield) Yield(ctx context.Context) error {
-	select {
-	case h.entered <- struct{}{}:
-	default:
-	}
-	select {
-	case <-h.release:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	h.mu.Lock()
-	already := h.done
-	h.done = true
-	h.holding = nil
-	h.mu.Unlock()
-	if already {
-		return nil
-	}
-	h.in.mu.Lock()
-	for i := range h.in.samples {
-		if h.in.samples[i].Amount >= h.frees {
-			h.in.samples[i].Amount -= h.frees
-			break
-		}
-	}
-	h.in.at = time.Now()
-	h.in.mu.Unlock()
-	return nil
-}
-
 func askerNamed(name string) Subject {
 	return Subject{Program: `C:\askers\` + name + `.exe`, Account: "S-1-5-21-7-" + name}
 }
 
-// Two askers reach the same attached holder's yield at the same moment and
-// are both parked inside Yield until the test releases it together, proving
-// two waiters on one yield rather than assuming a scheduling accident. The
+// Two askers reach the same lease holder at the same moment and both of
+// their yield requests are parked until the test releases them together,
+// proving two waiters on one yield rather than assuming a scheduling
+// accident. The
 // pool fits only one of the two 60 GiB requests once the holder's 70 GiB
 // comes back, so both see enough free the instant the yield settles.
 // Book.grant decides against the bytes free under its own lock at that
@@ -91,9 +27,9 @@ func askerNamed(name string) Subject {
 // ask, gets no answer from it before its deadline, and reads
 // holders_refused.
 func TestGrantIsDecidedUnderTheLockAgainstAConcurrentGrant(t *testing.T) {
-	in := card(100*gib, 70*gib)
-	paused := newPausedYield("host:paused", "gemma", 70*gib, in)
-	book := cardBook(t, in, BookOptions{Attached: []Attached{paused}, Settle: 200 * time.Millisecond})
+	in := card(100 * gib)
+	book := cardBook(t, in, BookOptions{Settle: 200 * time.Millisecond})
+	paused := newHolder(t, book, in, "paused", 70*gib, func(h *holder) { h.pause = make(chan struct{}) })
 	x, y := askerNamed("x"), askerNamed("y")
 	const waitMs = 300
 
@@ -102,18 +38,18 @@ func TestGrantIsDecidedUnderTheLockAgainstAConcurrentGrant(t *testing.T) {
 	run.Add(2)
 	go func() {
 		defer run.Done()
-		results[0] = book.Acquire(context.Background(), x, nil, instrument.Card0, 60*gib, waitMs)
+		results[0] = book.Acquire(context.Background(), x, boundPeer(), instrument.Card0, 60*gib, waitMs)
 	}()
 	go func() {
 		defer run.Done()
-		results[1] = book.Acquire(context.Background(), y, nil, instrument.Card0, 60*gib, waitMs)
+		results[1] = book.Acquire(context.Background(), y, boundPeer(), instrument.Card0, 60*gib, waitMs)
 	}()
 
-	// Both askers are provably parked inside the one yield before it is let
-	// to complete.
-	<-paused.entered
-	<-paused.entered
-	close(paused.release)
+	// Both askers' requests provably reach the one holder before it is let
+	// to yield.
+	paused.request(t)
+	paused.request(t)
+	close(paused.pause)
 	run.Wait()
 
 	acquired, refused := 0, 0

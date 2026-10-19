@@ -50,8 +50,8 @@ var dispatches = []Dispatch{
 	{
 		Engine: EnginePyTorchROCm,
 		Env: map[string]string{
-			"MIOPEN_FIND_MODE":                        "FAST",
-			"MIOPEN_DEBUG_CONV_DIRECT":                "0",
+			"MIOPEN_FIND_MODE":         "FAST",
+			"MIOPEN_DEBUG_CONV_DIRECT": "0",
 			// The naive reference solvers, timed at up to 6,667 ms per
 			// dispatch in run b's search (stack review condition 4).
 			"MIOPEN_DEBUG_CONV_DIRECT_NAIVE_CONV_FWD": "0",

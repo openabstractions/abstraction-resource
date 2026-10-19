@@ -1,11 +1,12 @@
 package instrument
 
 import (
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-var globalMemoryStatusEx = syscall.NewLazyDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
+var globalMemoryStatusEx = windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
 
 // memoryStatusEx is MEMORYSTATUSEX. Only ullTotalPhys is read here; the rest
 // of the record is named so the structure's size and layout are the ones the

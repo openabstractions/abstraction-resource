@@ -15,55 +15,118 @@ import (
 	"github.com/openabstractions/abstraction-resource/go/instrument"
 )
 
-// holder is an attached holder the test drives: what it says it holds, what
-// its yield does to the instrument, and whether its host refuses.
+// holder is a lease holder the test drives. It is granted a lease of card:0,
+// occupies it on the instrument, observes the yield requests put to it and
+// answers each one in its own goroutine. refuse answers refused with that
+// reason; keep answers yielded without letting any bytes go; pause parks each
+// request until the test closes it; manual leaves every answer to the test.
 type holder struct {
-	name     string
-	resource string
-	holding  []string
-	frees    int64
-	refuse   error
-	in       *fake
+	who    Subject
+	in     *fake
+	book   *Book
+	lease  string
+	refuse string
+	keep   bool
+	manual bool
+	pause  chan struct{}
+	seen   chan wire.YieldRequest
 
 	mu    sync.Mutex
 	asked int
-	order *[]string
+	freed bool
 }
 
-func (h *holder) Holder() string   { return h.name }
-func (h *holder) Resource() string { return h.resource }
-
-func (h *holder) Holding(context.Context) ([]string, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.holding, nil
-}
-
-func (h *holder) Yield(context.Context) error {
-	h.mu.Lock()
-	h.asked++
-	if h.order != nil {
-		*h.order = append(*h.order, h.name)
+func newHolder(t *testing.T, book *Book, in *fake, name string, amount int64, configure ...func(*holder)) *holder {
+	t.Helper()
+	h := &holder{who: Subject{Program: `C:\holders\` + name + `.exe`, Account: "S-1-5-21-7-1001"},
+		in: in, book: book, seen: make(chan wire.YieldRequest, 16)}
+	for _, c := range configure {
+		c(h)
 	}
-	refuse := h.refuse
+	got := book.Acquire(context.Background(), h.who, boundPeer(), instrument.Card0, amount, 0)
+	if got.Outcome != wire.AcquireOutcomeAcquired || got.Lease == nil {
+		t.Fatalf("holder %s could not acquire %d bytes: %+v", name, amount, got)
+	}
+	h.lease = got.Lease.ID
+	in.mu.Lock()
+	in.samples = append(in.samples, instrument.Sample{PID: 200 + len(in.samples), Program: h.who.Program,
+		Account: h.who.Account, Amount: amount})
+	in.at = time.Now()
+	in.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-done })
+	go h.run(ctx, done)
+	return h
+}
+
+func (h *holder) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
+	var answering sync.WaitGroup
+	defer answering.Wait()
+	cursor := ""
+	for ctx.Err() == nil {
+		page, err := h.book.Observe(ctx, h.who, cursor, 1000)
+		if err != nil {
+			return
+		}
+		cursor = page.Next
+		for _, request := range page.Requests {
+			h.mu.Lock()
+			h.asked++
+			h.mu.Unlock()
+			select {
+			case h.seen <- request:
+			default:
+			}
+			if h.manual {
+				continue
+			}
+			answering.Add(1)
+			go func() {
+				defer answering.Done()
+				h.answer(ctx, request)
+			}()
+		}
+	}
+}
+
+func (h *holder) answer(ctx context.Context, request wire.YieldRequest) {
+	if h.pause != nil {
+		select {
+		case <-h.pause:
+		case <-ctx.Done():
+			return
+		}
+	}
+	if h.refuse != "" {
+		h.book.Answer(h.who, request.ID, wire.YieldAnswerRefused, h.refuse)
+		return
+	}
+	if !h.keep {
+		h.free()
+	}
+	h.book.Answer(h.who, request.ID, wire.YieldAnswerYielded, "")
+}
+
+// free lets the holder's bytes go once, however many askers are waiting on
+// it, the way one unload frees its model once.
+func (h *holder) free() {
+	h.mu.Lock()
+	already := h.freed
+	h.freed = true
 	h.mu.Unlock()
-	if refuse != nil {
-		return refuse
+	if already {
+		return
 	}
-	// A yield through a host's own API frees what the instrument then shows.
 	h.in.mu.Lock()
 	for i := range h.in.samples {
-		if h.in.samples[i].Amount >= h.frees {
-			h.in.samples[i].Amount -= h.frees
-			break
+		if h.in.samples[i].Program == h.who.Program {
+			h.in.samples[i].Amount = 0
 		}
 	}
 	h.in.at = time.Now()
 	h.in.mu.Unlock()
-	h.mu.Lock()
-	h.holding = nil
-	h.mu.Unlock()
-	return nil
 }
 
 func (h *holder) times() int {
@@ -72,63 +135,27 @@ func (h *holder) times() int {
 	return h.asked
 }
 
-// waiterYield is one controlled attempt to yield. Each waiter gets its own
-// release signal so cancelling one Acquire cannot release or cancel another.
-type waiterYield struct {
-	ctx     context.Context
-	proceed chan struct{}
-	once    sync.Once
-}
-
-func (y *waiterYield) continueYield() { y.once.Do(func() { close(y.proceed) }) }
-
-// gatedHolder lets these tests stop a yield before it has an effect. Its
-// first released call acknowledges without freeing memory; a later call frees
-// the measured bytes, allowing a surviving waiter to complete.
-type gatedHolder struct {
-	in       *fake
-	resource string
-	frees    int64
-	calls    chan *waiterYield
-
-	mu    sync.Mutex
-	count int
-}
-
-func (h *gatedHolder) Holder() string   { return "host:gated" }
-func (h *gatedHolder) Resource() string { return h.resource }
-func (h *gatedHolder) Holding(context.Context) ([]string, error) {
-	return []string{"resident"}, nil
-}
-func (h *gatedHolder) Yield(ctx context.Context) error {
-	h.mu.Lock()
-	h.count++
-	callNumber := h.count
-	h.mu.Unlock()
-	y := &waiterYield{ctx: ctx, proceed: make(chan struct{})}
+func (h *holder) request(t *testing.T) wire.YieldRequest {
+	t.Helper()
 	select {
-	case h.calls <- y:
-	case <-ctx.Done():
-		return ctx.Err()
+	case request := <-h.seen:
+		return request
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not receive the yield request")
+		return wire.YieldRequest{}
 	}
-	select {
-	case <-y.proceed:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if callNumber > 1 {
-		h.in.mu.Lock()
-		for i := range h.in.samples {
-			if h.in.samples[i].Amount >= h.frees {
-				h.in.samples[i].Amount -= h.frees
-				break
-			}
-		}
-		h.in.at = time.Now()
-		h.in.mu.Unlock()
-	}
-	return nil
 }
+
+// pending is the ids of the yield requests still waiting for this holder.
+func (h *holder) pending() map[string]bool {
+	out := map[string]bool{}
+	for _, request := range h.book.page(h.who, 0).Requests {
+		out[request.ID] = true
+	}
+	return out
+}
+
+func manual(h *holder) { h.manual = true }
 
 // signalledInstrument exposes each fresh measurement to a test without
 // changing its value or the service's timing.
@@ -149,27 +176,16 @@ func (i *signalledInstrument) Read(resource string) (instrument.Reading, error) 
 	return r, err
 }
 
-func waiterBook(t *testing.T, in *fake, attached Attached, reads chan struct{}) *Book {
+func waiterBook(t *testing.T, in *fake, reads chan struct{}) *Book {
 	t.Helper()
 	book, err := OpenBook(BookOptions{
-		Table:    NewTable(&signalledInstrument{in: in, reads: reads}, nil, time.Nanosecond),
-		Attached: []Attached{attached}, Settle: 5 * time.Second,
+		Table:  NewTable(&signalledInstrument{in: in, reads: reads}, nil, time.Nanosecond),
+		Settle: 5 * time.Second, Hold: permitGate, Yield: permitYield,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return book
-}
-
-func receiveWaiterYield(t *testing.T, calls <-chan *waiterYield) *waiterYield {
-	t.Helper()
-	select {
-	case y := <-calls:
-		return y
-	case <-time.After(5 * time.Second):
-		t.Fatal("holder did not receive the yield request")
-		return nil
-	}
 }
 
 func receiveAcquire(t *testing.T, results <-chan wire.AcquireResult) wire.AcquireResult {
@@ -202,93 +218,98 @@ func drainMeasurements(reads <-chan struct{}) {
 	}
 }
 
-// Cancelling an Acquire blocked inside an attached yield ends only that
-// waiter. A second waiter retains its own yield context and can use the bytes
-// when the holder later frees them.
-func TestAcquireCancellationDuringAttachedYieldLeavesOtherWaiterAlone(t *testing.T) {
-	in := card(100*gib, 90*gib)
+// onlyHolderLease reports whether the book holds the holder's own lease and
+// nothing else: a cancelled asker was granted nothing.
+func onlyHolderLease(book *Book, h *holder) bool {
+	live := book.Leases()
+	return len(live) == 1 && live[0].ID == h.lease
+}
+
+// Cancelling an Acquire waiting on a holder's yield ends only that waiter. A
+// second waiter's yield request stands, and it can use the bytes when the
+// holder later frees them.
+func TestAcquireCancellationDuringYieldLeavesOtherWaiterAlone(t *testing.T) {
+	in := card(100 * gib)
 	reads := make(chan struct{}, 128)
-	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
-	book := waiterBook(t, in, holder, reads)
+	book := waiterBook(t, in, reads)
+	h := newHolder(t, book, in, "gated", 90*gib, manual)
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
 	firstResult := make(chan wire.AcquireResult, 1)
-	go func() { firstResult <- book.Acquire(firstCtx, asker(), nil, instrument.Card0, 60*gib, 5000) }()
-	firstYield := receiveWaiterYield(t, holder.calls)
-	defer firstYield.continueYield()
+	go func() { firstResult <- book.Acquire(firstCtx, asker(), boundPeer(), instrument.Card0, 60*gib, 5000) }()
+	h.request(t)
 
 	secondResult := make(chan wire.AcquireResult, 1)
 	go func() {
-		secondResult <- book.Acquire(context.Background(), askerNamed("second"), nil, instrument.Card0, 60*gib, 5000)
+		secondResult <- book.Acquire(context.Background(), askerNamed("second"), boundPeer(), instrument.Card0, 60*gib, 5000)
 	}()
-	secondYield := receiveWaiterYield(t, holder.calls)
-	defer secondYield.continueYield()
+	second := h.request(t)
 
 	cancelFirst()
 	if got := receiveAcquire(t, firstResult); got.Outcome == wire.AcquireOutcomeAcquired {
 		t.Fatalf("cancelled waiter acquired a lease: %+v", got)
 	}
-	if len(book.Leases()) != 0 {
+	if !onlyHolderLease(book, h) {
 		t.Fatalf("cancelled waiter left a lease behind: %+v", book.Leases())
 	}
-	if err := secondYield.ctx.Err(); err != nil {
-		t.Fatalf("cancelling the first waiter cancelled the second holder request: %v", err)
+	if !h.pending()[second.ID] {
+		t.Fatalf("cancelling the first waiter withdrew the second waiter's request %s", second.ID)
 	}
-	secondYield.continueYield()
+	h.free()
+	book.Answer(h.who, second.ID, wire.YieldAnswerYielded, "")
 	if got := receiveAcquire(t, secondResult); got.Outcome != wire.AcquireOutcomeAcquired || got.Lease == nil {
 		t.Fatalf("second waiter did not acquire after its own yield: %+v", got)
 	}
 }
 
-// Cancelling after the holder acknowledged but before the instrument reports
-// freed bytes stops only that asker's settling wait. A separate waiter can
-// continue its own yield and acquire after the holder frees memory.
-func TestAcquireCancellationDuringAttachedYieldSettlingLeavesOtherWaiterAlone(t *testing.T) {
-	in := card(100*gib, 90*gib)
+// Cancelling after the holder answered yielded but before the instrument
+// reports freed bytes stops only that asker's settling wait. A separate waiter
+// can continue and acquire after the holder frees memory.
+func TestAcquireCancellationDuringYieldSettlingLeavesOtherWaiterAlone(t *testing.T) {
+	in := card(100 * gib)
 	reads := make(chan struct{}, 128)
-	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
-	book := waiterBook(t, in, holder, reads)
+	book := waiterBook(t, in, reads)
+	h := newHolder(t, book, in, "gated", 90*gib, manual)
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
 	firstResult := make(chan wire.AcquireResult, 1)
-	go func() { firstResult <- book.Acquire(firstCtx, asker(), nil, instrument.Card0, 60*gib, 5000) }()
-	firstYield := receiveWaiterYield(t, holder.calls)
-	defer firstYield.continueYield()
+	go func() { firstResult <- book.Acquire(firstCtx, asker(), boundPeer(), instrument.Card0, 60*gib, 5000) }()
+	first := h.request(t)
 	drainMeasurements(reads)
-	firstYield.continueYield()
+	book.Answer(h.who, first.ID, wire.YieldAnswerYielded, "")
 	receiveMeasurement(t, reads)
 
 	secondResult := make(chan wire.AcquireResult, 1)
 	go func() {
-		secondResult <- book.Acquire(context.Background(), askerNamed("second"), nil, instrument.Card0, 60*gib, 5000)
+		secondResult <- book.Acquire(context.Background(), askerNamed("second"), boundPeer(), instrument.Card0, 60*gib, 5000)
 	}()
-	secondYield := receiveWaiterYield(t, holder.calls)
-	defer secondYield.continueYield()
+	second := h.request(t)
 
 	cancelFirst()
 	if got := receiveAcquire(t, firstResult); got.Outcome == wire.AcquireOutcomeAcquired {
 		t.Fatalf("cancelled waiter acquired before the instrument showed freed bytes: %+v", got)
 	}
-	if len(book.Leases()) != 0 {
+	if !onlyHolderLease(book, h) {
 		t.Fatalf("cancelled waiter left a lease behind: %+v", book.Leases())
 	}
-	if err := secondYield.ctx.Err(); err != nil {
-		t.Fatalf("cancelling the settling waiter cancelled the second holder request: %v", err)
+	if !h.pending()[second.ID] {
+		t.Fatalf("cancelling the settling waiter withdrew the second waiter's request %s", second.ID)
 	}
-	secondYield.continueYield()
+	h.free()
+	book.Answer(h.who, second.ID, wire.YieldAnswerYielded, "")
 	if got := receiveAcquire(t, secondResult); got.Outcome != wire.AcquireOutcomeAcquired || got.Lease == nil {
 		t.Fatalf("second waiter did not acquire after the instrument confirmed release: %+v", got)
 	}
 }
 
 // Caller disconnect reaches a pending Acquire through FramedCall.WaitContext.
-// Cancelling one actual framed call must stop only its holder yield; a sibling
-// call can still yield the bytes and acquire them.
+// Cancelling one actual framed call must withdraw only its own yield request;
+// a sibling call's request stands, and it acquires once the holder yields.
 func TestFramedAcquireCancellationStopsOnlyItsOwnYield(t *testing.T) {
-	in := card(100*gib, 90*gib)
+	in := card(100 * gib)
 	reads := make(chan struct{}, 128)
-	holder := &gatedHolder{in: in, resource: instrument.Card0, frees: 90 * gib, calls: make(chan *waiterYield, 2)}
-	book := waiterBook(t, in, holder, reads)
+	book := waiterBook(t, in, reads)
+	h := newHolder(t, book, in, "gated", 90*gib, manual)
 	client := servedWithLeases(t, book.table, book)
 
 	type acquireCall struct {
@@ -302,22 +323,22 @@ func TestFramedAcquireCancellationStopsOnlyItsOwnYield(t *testing.T) {
 		result, err := client.AcquireContext(firstCtx, instrument.Card0, 60*gib, 30000*time.Millisecond)
 		firstResult <- acquireCall{result: result, err: err}
 	}()
-	firstYield := receiveWaiterYield(t, holder.calls)
-	defer firstYield.continueYield()
+	first := h.request(t)
 
 	secondResult := make(chan acquireCall, 1)
 	go func() {
 		result, err := client.AcquireContext(context.Background(), instrument.Card0, 60*gib, 30000*time.Millisecond)
 		secondResult <- acquireCall{result: result, err: err}
 	}()
-	secondYield := receiveWaiterYield(t, holder.calls)
-	defer secondYield.continueYield()
+	second := h.request(t)
 
 	cancelFirst()
-	select {
-	case <-firstYield.ctx.Done():
-	case <-time.After(3 * time.Second):
-		t.Fatal("closing the caller's framed call did not cancel its attached yield")
+	withdrawn := time.Now().Add(3 * time.Second)
+	for h.pending()[first.ID] {
+		if time.Now().After(withdrawn) {
+			t.Fatal("closing the caller's framed call did not withdraw its yield request")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	select {
 	case got := <-firstResult:
@@ -327,13 +348,14 @@ func TestFramedAcquireCancellationStopsOnlyItsOwnYield(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancelled framed Acquire did not return")
 	}
-	if leases := book.Leases(); len(leases) != 0 {
-		t.Fatalf("cancelled framed caller retained a lease: %+v", leases)
+	if !onlyHolderLease(book, h) {
+		t.Fatalf("cancelled framed caller retained a lease: %+v", book.Leases())
 	}
-	if err := secondYield.ctx.Err(); err != nil {
-		t.Fatalf("cancelling the first call cancelled the sibling yield: %v", err)
+	if !h.pending()[second.ID] {
+		t.Fatalf("cancelling the first call withdrew the sibling's request %s", second.ID)
 	}
-	secondYield.continueYield()
+	h.free()
+	book.Answer(h.who, second.ID, wire.YieldAnswerYielded, "")
 	select {
 	case got := <-secondResult:
 		if got.err != nil || got.result.Outcome != wire.AcquireOutcomeAcquired || got.result.Lease == nil {
@@ -350,14 +372,14 @@ func TestFramedAcquireCancellationStopsOnlyItsOwnYield(t *testing.T) {
 func TestAcquireChecksCancellationAtGrantCommitFence(t *testing.T) {
 	in := card(100*gib, 0)
 	gate := &grantGateInstrument{in: in, entered: make(chan struct{}), proceed: make(chan struct{})}
-	book, err := OpenBook(BookOptions{Table: NewTable(gate, nil, time.Nanosecond)})
+	book, err := OpenBook(BookOptions{Table: NewTable(gate, nil, time.Nanosecond), Hold: permitGate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan wire.AcquireResult, 1)
-	go func() { result <- book.Acquire(ctx, asker(), nil, instrument.Card0, 10*gib, 0) }()
+	go func() { result <- book.Acquire(ctx, asker(), boundPeer(), instrument.Card0, 10*gib, 0) }()
 	select {
 	case <-gate.entered:
 	case <-time.After(5 * time.Second):
@@ -397,6 +419,17 @@ func (g *grantGateInstrument) Read(resource string) (instrument.Reading, error) 
 func cardBook(t *testing.T, in *fake, options BookOptions) *Book {
 	t.Helper()
 	options.Table = NewTable(in, nil, time.Nanosecond)
+	// A book without a gate refuses (gate_test.go); a test that does not
+	// decide a gate itself installs one that permits.
+	if options.Hold == nil {
+		options.Hold = permitGate
+	}
+	if options.Yield == nil {
+		options.Yield = permitYield
+	}
+	if options.Standing == nil {
+		options.Standing = permitStanding
+	}
 	if options.Settle == 0 {
 		options.Settle = 2 * time.Second
 	}
@@ -426,19 +459,18 @@ func asker() Subject { return Subject{Program: `C:\comfy\python.exe`, Account: "
 // A request inside what is free is granted at once and asks nobody: the
 // service exists to arbitrate scarcity, and there is no scarcity here.
 func TestAcquireInsideWhatIsFreeAsksNobody(t *testing.T) {
-	in := card(120*gib, 20*gib)
-	asked := []string{}
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 20 * gib, in: in, order: &asked}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 10*gib, 1000)
+	in := card(120 * gib)
+	book := cardBook(t, in, BookOptions{})
+	h := newHolder(t, book, in, "lm", 20*gib)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 10*gib, 1000)
 	if result.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatalf("10 GiB of 100 free read %s", result.Outcome)
 	}
 	if len(result.Asked) != 0 {
 		t.Fatalf("a request inside what is free asked %+v", result.Asked)
 	}
-	if lm.times() != 0 {
-		t.Fatal("a host was unloaded although nothing was scarce")
+	if h.times() != 0 {
+		t.Fatal("a holder was asked although nothing was scarce")
 	}
 	if result.Lease == nil || result.Lease.Amount != 10*gib {
 		t.Fatalf("lease %+v", result.Lease)
@@ -448,59 +480,40 @@ func TestAcquireInsideWhatIsFreeAsksNobody(t *testing.T) {
 // More than the instrument says the card is, is insufficient before any
 // holder is asked: nobody yielding could make it fit.
 func TestAcquireBeyondCapacityIsInsufficient(t *testing.T) {
-	in := card(120*gib, 20*gib)
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 20 * gib, in: in}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 200*gib, 1000)
+	in := card(120 * gib)
+	book := cardBook(t, in, BookOptions{})
+	h := newHolder(t, book, in, "lm", 20*gib)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 200*gib, 1000)
 	if result.Outcome != wire.AcquireOutcomeInsufficient {
 		t.Fatalf("200 GiB of a 120 GiB card read %s", result.Outcome)
 	}
-	if len(result.Asked) != 0 || lm.times() != 0 {
+	if len(result.Asked) != 0 || h.times() != 0 {
 		t.Fatal("a request larger than the card asked a holder anyway")
 	}
 }
 
-// Attached holders are asked idle longest first, and the asking stops as soon
-// as the bytes are there (CONTRACT.md RES-L2).
-func TestAttachedHoldersAreAskedIdleLongestFirst(t *testing.T) {
-	in := card(120*gib, 40*gib, 40*gib)
-	asked := []string{}
-	clock := time.Now()
-	older := &holder{name: "host:ollama", resource: instrument.Card0, holding: []string{"llama"}, frees: 40 * gib, in: in, order: &asked}
-	newer := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 40 * gib, in: in, order: &asked}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{newer, older},
-		Now: func() time.Time { return clock }})
-	// Both are seen holding at the same instant, then lmstudio's list changes
-	// and ollama's does not: ollama has been idle longer.
-	book.mark(context.Background(), instrument.Card0)
-	clock = clock.Add(time.Minute)
-	newer.holding = []string{"gemma", "qwen"}
-	book.mark(context.Background(), instrument.Card0)
-	book.now = time.Now
-
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 5000)
-	if result.Outcome != wire.AcquireOutcomeAcquired {
-		t.Fatalf("outcome %s after %+v", result.Outcome, result.Asked)
+// Memory no lease holds is foreign: no holder can give it back, so a request
+// that only foreign memory blocks is insufficient at once and asks nobody
+// (RES-L3, RES-L9).
+func TestForeignMemoryIsNeverAsked(t *testing.T) {
+	in := card(120*gib, 100*gib)
+	book := cardBook(t, in, BookOptions{})
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 2000)
+	if result.Outcome != wire.AcquireOutcomeInsufficient {
+		t.Fatalf("60 GiB behind 100 GiB of foreign memory read %s", result.Outcome)
 	}
-	if len(asked) == 0 || asked[0] != "host:ollama" {
-		t.Fatalf("asked in order %v; the holder idle longest is not first", asked)
-	}
-	if len(result.Asked) != 1 || result.Asked[0].Answer != AnswerYielded {
-		t.Fatalf("asked %+v; one yield covered the request and a second holder was asked anyway", result.Asked)
-	}
-	if result.Asked[0].Amount != 40*gib {
-		t.Fatalf("the record says %d bytes freed, not what the instrument showed", result.Asked[0].Amount)
+	if len(result.Asked) != 0 {
+		t.Fatalf("foreign memory was asked: %+v", result.Asked)
 	}
 }
 
-// A host whose own API refuses is recorded as a refusal with its reason, and
-// the asker is told holders_refused before it allocates anything.
+// A holder that refuses is recorded as a refusal with its reason, and the
+// asker is told holders_refused before it allocates anything.
 func TestRefusingHolderIsRecordedAndTheAskerAllocatesNothing(t *testing.T) {
-	in := card(120*gib, 100*gib)
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"},
-		frees: 100 * gib, in: in, refuse: errors.New("model is generating")}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 2000)
+	in := card(120 * gib)
+	book := cardBook(t, in, BookOptions{})
+	h := newHolder(t, book, in, "lm", 100*gib, func(h *holder) { h.refuse = "model is generating" })
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 2000)
 	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
 		t.Fatalf("a refusing holder read %s", result.Outcome)
 	}
@@ -510,27 +523,27 @@ func TestRefusingHolderIsRecordedAndTheAskerAllocatesNothing(t *testing.T) {
 	if !strings.HasPrefix(result.Asked[0].Answer, AnswerRefused) || !strings.Contains(result.Asked[0].Answer, "generating") {
 		t.Fatalf("the refusal lost its reason: %q", result.Asked[0].Answer)
 	}
-	if len(book.Leases()) != 0 {
+	if !onlyHolderLease(book, h) {
 		t.Fatal("a refused acquire left a lease behind")
 	}
 }
 
-// A host that answers and frees nothing inside the wait is unanswered, not
-// yielded: the instrument decides, never the host's own reply
-// (CONTRACT.md RES-L3).
+// A holder that answers yielded and frees nothing inside the wait is
+// unanswered, not yielded: the instrument decides, never the holder's own
+// reply (CONTRACT.md RES-L3).
 func TestHolderThatFreesNothingInsideTheWaitIsUnanswered(t *testing.T) {
-	in := card(120*gib, 100*gib)
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 0, in: in}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}, Settle: 300 * time.Millisecond})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 2000)
+	in := card(120 * gib)
+	book := cardBook(t, in, BookOptions{Settle: 300 * time.Millisecond})
+	h := newHolder(t, book, in, "lm", 100*gib, func(h *holder) { h.keep = true })
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 2000)
 	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
 		t.Fatalf("outcome %s", result.Outcome)
 	}
 	if len(result.Asked) != 1 || result.Asked[0].Answer != AnswerUnanswered {
-		t.Fatalf("a host that freed nothing answered %+v", result.Asked)
+		t.Fatalf("a holder that freed nothing answered %+v", result.Asked)
 	}
-	if lm.times() != 1 {
-		t.Fatalf("the host was asked %d times", lm.times())
+	if h.times() != 1 {
+		t.Fatalf("the holder was asked %d times", h.times())
 	}
 }
 
@@ -539,7 +552,7 @@ func TestLeaseEndsUnlessItIsRenewed(t *testing.T) {
 	in := card(120*gib, 0)
 	clock := time.Now()
 	book := cardBook(t, in, BookOptions{Lifetime: time.Minute, Now: func() time.Time { return clock }})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 10*gib, 0)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 10*gib, 0)
 	if result.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatal(result.Outcome)
 	}
@@ -570,8 +583,8 @@ func TestLeasesSurviveARestart(t *testing.T) {
 	in := card(120*gib, 0)
 	clock := time.Now()
 	book := cardBook(t, in, BookOptions{Path: path, Lifetime: time.Minute, Now: func() time.Time { return clock }})
-	kept := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 10*gib, 0)
-	short := book.Acquire(context.Background(), Subject{Program: `C:\brief.exe`}, nil, instrument.Card0, gib, 0)
+	kept := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 10*gib, 0)
+	short := book.Acquire(context.Background(), Subject{Program: `C:\brief.exe`}, boundPeer(), instrument.Card0, gib, 0)
 	if kept.Outcome != wire.AcquireOutcomeAcquired || short.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatalf("%s %s", kept.Outcome, short.Outcome)
 	}
@@ -586,7 +599,7 @@ func TestLeasesSurviveARestart(t *testing.T) {
 		t.Fatalf("a restart kept %d of two leases", len(live))
 	}
 	// A new lease after the restart never reissues an id the book already had.
-	again := restarted.Acquire(context.Background(), asker(), nil, instrument.Card0, gib, 0)
+	again := restarted.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, gib, 0)
 	for _, was := range live {
 		if again.Lease.ID == was.ID {
 			t.Fatalf("the restart reissued lease id %s", was.ID)
@@ -640,29 +653,6 @@ func TestAcquireDecidesTheRuleBeforeItReadsTheTable(t *testing.T) {
 	}
 }
 
-// A rule that refuses yields for one host leaves that host holding, and the
-// refusal carries the host's name (RES-L3).
-func TestARuleAgainstYieldingOneHostLeavesItHolding(t *testing.T) {
-	in := card(120*gib, 100*gib)
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 100 * gib, in: in}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}, Yield: func(_ context.Context, holder string) error {
-		if holder != "host:lmstudio" {
-			return nil
-		}
-		return errors.New("denied")
-	}})
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 2000)
-	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
-		t.Fatalf("outcome %s", result.Outcome)
-	}
-	if lm.times() != 0 {
-		t.Fatal("a host with a rule against yielding was unloaded anyway")
-	}
-	if len(result.Asked) != 1 || !strings.Contains(result.Asked[0].Answer, "host:lmstudio") {
-		t.Fatalf("the refusal does not name the host: %+v", result.Asked)
-	}
-}
-
 // The wake hold is a lease of resource awake like any other, and the table
 // reports it as a row of that resource (CONTRACT.md RES-A1).
 func TestAwakeIsALeaseAndShowsInTheTable(t *testing.T) {
@@ -713,7 +703,7 @@ func TestLeaseHolderObservesAndAnswers(t *testing.T) {
 	in := card(120 * gib)
 	book := cardBook(t, in, BookOptions{Settle: 2 * time.Second})
 	other := Subject{Program: `C:\lms\lmstudio.exe`, Account: "S-1-5-21-7-1001"}
-	granted := book.Acquire(context.Background(), other, nil, instrument.Card0, 100*gib, 0)
+	granted := book.Acquire(context.Background(), other, boundPeer(), instrument.Card0, 100*gib, 0)
 	if granted.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatal(granted.Outcome)
 	}
@@ -739,7 +729,7 @@ func TestLeaseHolderObservesAndAnswers(t *testing.T) {
 		in.mu.Unlock()
 		book.Answer(other, page.Requests[0].ID, wire.YieldAnswerYielded, "")
 	}()
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 10000)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 10000)
 	<-answered
 	if lease := <-observed; lease != granted.Lease.ID {
 		t.Fatalf("yield request named lease %q, wanted %q", lease, granted.Lease.ID)
@@ -786,7 +776,7 @@ func TestLeaseHolderThatNeverObservesIsUnanswered(t *testing.T) {
 	in := card(120 * gib)
 	book := cardBook(t, in, BookOptions{})
 	other := Subject{Program: `C:\lms\lmstudio.exe`, Account: "S-1-5-21-7-1001"}
-	if out := book.Acquire(context.Background(), other, nil, instrument.Card0, 100*gib, 0); out.Outcome != wire.AcquireOutcomeAcquired {
+	if out := book.Acquire(context.Background(), other, boundPeer(), instrument.Card0, 100*gib, 0); out.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatal(out.Outcome)
 	}
 	in.mu.Lock()
@@ -794,7 +784,7 @@ func TestLeaseHolderThatNeverObservesIsUnanswered(t *testing.T) {
 	in.at = time.Now()
 	in.mu.Unlock()
 	began := time.Now()
-	result := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 500)
+	result := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 500)
 	if result.Outcome != wire.AcquireOutcomeHoldersRefused {
 		t.Fatalf("outcome %s", result.Outcome)
 	}
@@ -812,9 +802,10 @@ func TestLeaseHolderThatNeverObservesIsUnanswered(t *testing.T) {
 // leases@1 answers on the table's own endpoint, and the caller it grants to is
 // the program the binding named, never one the caller asserted.
 func TestLeasesAnswerOnTheTableEndpoint(t *testing.T) {
+	system := &platformWake{}
 	in := &fake{name: instrument.NameNone, at: time.Now()}
 	table := NewTable(in, nil, time.Nanosecond)
-	book, err := OpenBook(BookOptions{Table: table, Lifetime: time.Minute,
+	book, err := OpenBook(BookOptions{Table: table, Lifetime: time.Minute, KeepSystemAwake: system.keep,
 		Hold: func(_ context.Context, peer *identity.Peer, action, resource string) error {
 			if peer == nil {
 				t.Error("the lease host decided without the caller's binding")
@@ -837,6 +828,9 @@ func TestLeasesAnswerOnTheTableEndpoint(t *testing.T) {
 	if result.Outcome != wire.AcquireOutcomeAcquired || result.Lease == nil {
 		t.Fatalf("acquire over the wire read %s", result.Outcome)
 	}
+	if taken, released := system.counts(); taken != 1 || released != 0 {
+		t.Fatalf("non-card client wake: taken %d released %d", taken, released)
+	}
 	state, err := client.Holders(ResourceAwake, true)
 	if err != nil {
 		t.Fatal(err)
@@ -851,6 +845,9 @@ func TestLeasesAnswerOnTheTableEndpoint(t *testing.T) {
 	released, err := client.Release(result.Lease.ID)
 	if err != nil || !released.Applied {
 		t.Fatalf("release %+v %v", released, err)
+	}
+	if taken, released := system.counts(); taken != 1 || released != 1 {
+		t.Fatalf("released client wake: taken %d released %d", taken, released)
 	}
 	repeated, err := client.Release(result.Lease.ID)
 	if err != nil || repeated.Applied {
@@ -883,10 +880,10 @@ func TestEveryAskIsRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer audit.Close()
-	in := card(120*gib, 100*gib)
-	lm := &holder{name: "host:lmstudio", resource: instrument.Card0, holding: []string{"gemma"}, frees: 100 * gib, in: in}
-	book := cardBook(t, in, BookOptions{Attached: []Attached{lm}, Audit: audit})
-	if out := book.Acquire(context.Background(), asker(), nil, instrument.Card0, 60*gib, 5000); out.Outcome != wire.AcquireOutcomeAcquired {
+	in := card(120 * gib)
+	book := cardBook(t, in, BookOptions{Audit: audit})
+	newHolder(t, book, in, "lm", 100*gib)
+	if out := book.Acquire(context.Background(), asker(), boundPeer(), instrument.Card0, 60*gib, 5000); out.Outcome != wire.AcquireOutcomeAcquired {
 		t.Fatalf("outcome %s", out.Outcome)
 	}
 	lines, err := ReadAudit(path, 64)
@@ -896,7 +893,7 @@ func TestEveryAskIsRecorded(t *testing.T) {
 	var sawAsk, sawLease bool
 	for _, line := range lines {
 		switch {
-		case strings.Contains(line, `"event":"ask"`) && strings.Contains(line, "host:lmstudio") &&
+		case strings.Contains(line, `"event":"ask"`) && strings.Contains(line, `holders\\lm.exe`) &&
 			strings.Contains(line, `"answer":"yielded"`) && strings.Contains(line, `"took_ms"`):
 			sawAsk = true
 		case strings.Contains(line, `"event":"acquired"`):

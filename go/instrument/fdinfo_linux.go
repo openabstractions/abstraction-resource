@@ -31,6 +31,10 @@ type fdinfoInstrument struct{ pr procReader }
 
 func (fdinfoInstrument) Name() string          { return NameLinuxFdinfo }
 func (f fdinfoInstrument) Resources() []string { return resourcesFdinfo(f.pr) }
+
+// PoolOf reads every card as carved from memory until an instrument reads a
+// discrete adapter's capacity (CONTRACT.md RES-L2 states the limit).
+func (fdinfoInstrument) PoolOf(resource string) string { return sharedWithMemory(resource) }
 func (fdinfoInstrument) VerifiedProcessSamples() bool {
 	pin, err := pinPID(os.Getpid())
 	if err != nil {

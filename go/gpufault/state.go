@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	identity "github.com/openabstractions/abstraction-identity"
 )
 
 // stateFile is the quarantine as it is kept across restarts. A driver reset
@@ -25,29 +28,52 @@ const stateVersion = 1
 var ErrDamagedQuarantine = errors.New("the quarantine file is damaged")
 
 func loadState(path string) ([]QuarantineEntry, error) {
+	entries, _, err := loadStateStamped(path)
+	return entries, err
+}
+
+func loadStateStamped(path string) ([]QuarantineEntry, stamp, error) {
 	if path == "" {
-		return nil, nil
+		return nil, stamp{}, nil
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, stamp{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("gpufault: reading the quarantine %s: %w", path, err)
+		return nil, stamp{}, fmt.Errorf("gpufault: reading the quarantine %s: %w", path, err)
+	}
+	defer f.Close()
+	before, _, err := identity.FileStamp(f)
+	if err != nil {
+		return nil, stamp{}, err
+	}
+	return readState(f, stamp{key: before})
+}
+
+// readState binds parsed bytes and the retained stamp to one held file.
+func readState(f *os.File, before stamp) ([]QuarantineEntry, stamp, error) {
+	data, err := io.ReadAll(f)
+	after, _, stampErr := identity.FileStamp(f)
+	if stampErr != nil || after != before.key {
+		return nil, stamp{}, fmt.Errorf("gpufault: quarantine changed while reading: %v", stampErr)
+	}
+	if err != nil {
+		return nil, before, err
 	}
 	var state stateFile
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("gpufault: %w: %s is not JSON: %v", ErrDamagedQuarantine, path, err)
+		return nil, before, fmt.Errorf("gpufault: %w: %s is not JSON: %v", ErrDamagedQuarantine, f.Name(), err)
 	}
 	if state.Version != stateVersion {
-		return nil, fmt.Errorf("gpufault: %w: %s has version %d, not %d", ErrDamagedQuarantine, path, state.Version, stateVersion)
+		return nil, before, fmt.Errorf("gpufault: %w: %s has version %d, not %d", ErrDamagedQuarantine, f.Name(), state.Version, stateVersion)
 	}
 	for _, e := range state.Entries {
 		if e.Key == "" || e.Key != e.Fingerprint.Key() {
-			return nil, fmt.Errorf("gpufault: %w: %s has an entry whose key does not match its fingerprint", ErrDamagedQuarantine, path)
+			return nil, before, fmt.Errorf("gpufault: %w: %s has an entry whose key does not match its fingerprint", ErrDamagedQuarantine, f.Name())
 		}
 	}
-	return state.Entries, nil
+	return state.Entries, before, nil
 }
 
 // moveAside renames a damaged quarantine file to path.bad-<UTC time> in the
@@ -63,16 +89,16 @@ func moveAside(path string, now time.Time) (string, error) {
 // openState is loadState that moves a damaged file aside and starts empty:
 // a quarantine a provider cannot read must neither stop the provider nor be
 // lost (RES-G3). moved is where a damaged file went; why is its damage.
-func openState(path string, now time.Time) (entries []QuarantineEntry, moved string, why error, err error) {
-	entries, err = loadState(path)
+func openState(path string, now time.Time) (entries []QuarantineEntry, seen stamp, moved string, why error, err error) {
+	entries, seen, err = loadStateStamped(path)
 	if err == nil || !errors.Is(err, ErrDamagedQuarantine) {
-		return entries, "", nil, err
+		return entries, seen, "", nil, err
 	}
 	moved, moveErr := moveAside(path, now)
 	if moveErr != nil {
-		return nil, "", err, fmt.Errorf("gpufault: moving the damaged quarantine %s aside: %w", path, moveErr)
+		return nil, stamp{}, "", err, fmt.Errorf("gpufault: moving the damaged quarantine %s aside: %w", path, moveErr)
 	}
-	return nil, moved, err, nil
+	return nil, stamp{}, moved, err, nil
 }
 
 // saveLocked writes the quarantine through a temporary file and a rename, so
@@ -111,28 +137,20 @@ func (g *Guard) saveLocked() error {
 		os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := retryQuarantineRename(func() error { return os.Rename(name, path) }); err != nil {
 		//unchecked: removing the unrenamed temporary file is best effort
 		os.Remove(name)
 		return err
 	}
-	g.stateSeen = stateStamp(path)
+	// The rename can race an external writer. Refresh from the actual held
+	// file next time instead of associating these bytes with a later path stat.
+	g.stateSeen = stamp{}
 	return nil
 }
 
-// stamp is a state file's modification time and size, enough to see that
-// another process (modelhostd gpu clear) rewrote it.
+// stamp is the opaque held-file change key of the parsed quarantine.
 type stamp struct {
-	mod  int64
-	size int64
-}
-
-func stateStamp(path string) stamp {
-	info, err := os.Stat(path)
-	if err != nil {
-		return stamp{}
-	}
-	return stamp{mod: info.ModTime().UnixNano(), size: info.Size()}
+	key string
 }
 
 // refreshLocked rereads the state file when another process changed it, so
@@ -142,14 +160,30 @@ func (g *Guard) refreshLocked() {
 	if g.opts.State == "" {
 		return
 	}
-	now := stateStamp(g.opts.State)
+	f, err := os.Open(g.opts.State)
+	if errors.Is(err, os.ErrNotExist) {
+		g.stateSeen = stamp{}
+		g.quarantine = map[string]*QuarantineEntry{}
+		return
+	}
+	if err != nil {
+		g.report(err)
+		return
+	}
+	defer f.Close()
+	key, _, err := identity.FileStamp(f)
+	if err != nil {
+		g.report(err)
+		return
+	}
+	now := stamp{key: key}
 	if now == g.stateSeen {
 		return
 	}
-	// The change is seen once, whatever it holds, so a file that cannot be
-	// read is reported once rather than at every check.
-	g.stateSeen = now
-	entries, err := loadState(g.opts.State)
+	// A stable failed read is reported once for that stamp. An uncertain
+	// read retains no stamp and can be retried at the next check.
+	entries, seen, err := readState(f, now)
+	g.stateSeen = seen
 	if err != nil {
 		g.report(err)
 		return

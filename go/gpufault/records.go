@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,7 +119,11 @@ func FromXML(rendered []byte) (Event, bool) {
 	case provider == providerPower && id == 506 && e.kernelWrote(channelSystem, guidPower, ""):
 		return Event{Kind: StandbyEnter, At: at, Source: "Kernel-Power 506"}, true
 	case provider == providerPower && id == 507 && e.kernelWrote(channelSystem, guidPower, ""):
-		return Event{Kind: StandbyExit, At: at, Source: "Kernel-Power 507"}, true
+		ev := Event{Kind: StandbyExit, At: at, Source: "Kernel-Power 507", Reason: data["Reason"]}
+		if us, err := strconv.ParseInt(data["SleepDurationInUs"], 10, 64); err == nil && us > 0 {
+			ev.SleepDuration = time.Duration(us) * time.Microsecond
+		}
+		return ev, true
 	case provider == providerGeneral && id == 12 && e.kernelWrote(channelSystem, guidGeneral, kernelPID):
 		return Event{Kind: bootRecord, At: at, Source: "Kernel-General 12"}, true
 	case provider == providerWer && id == 1001 && e.kernelWrote(channelWer, guidWer, kernelPID):

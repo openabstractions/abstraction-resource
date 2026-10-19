@@ -8,13 +8,23 @@
 // research/resources/MEASUREMENT-2026-09-22.md is what the table is built on.
 package instrument
 
-import "time"
+import (
+	"strings"
+	"sync"
+	"time"
+)
 
 // The instrument names CONTRACT.md RES-T2 allows in ResourceState.instrument.
 const (
 	NameWindowsGPUCounters = "windows-gpu-counters"
 	NameLinuxFdinfo        = "linux-fdinfo"
-	NameNone               = "none"
+	// NameMetalWorkingSet measures card:0's capacity on a Mac and no
+	// holder: every row it reports is claimed.
+	NameMetalWorkingSet = "metal-working-set"
+	NameNone            = "none"
+	// NameFixed is the instrument whose readings its owner sets: tests and
+	// the conformance driver, never a running service.
+	NameFixed = "fixed"
 )
 
 // Card0 is the first accelerator's memory. On an APU it and memory report the
@@ -62,6 +72,10 @@ type ProcessInfo struct {
 	StartTicks uint64
 	Started    time.Time
 	Account    string
+	// Image is the process's full image path where the platform reads it
+	// through the same handle (Windows); empty elsewhere. The lease book
+	// uses it to keep an engine's own interpreter inside the engine's folder.
+	Image string
 }
 
 // A Reading is one observation of one resource.
@@ -105,6 +119,113 @@ type none struct{}
 func (none) Name() string                 { return NameNone }
 func (none) Resources() []string          { return nil }
 func (none) VerifiedProcessSamples() bool { return false }
+
+// PoolOf reads a card as carved from memory, as the Windows and Linux
+// instruments do: with nothing measuring, a card's bytes are the machine's
+// memory (unified on Apple Silicon; a discrete card is the limit CONTRACT.md
+// RES-L2 states).
+func (none) PoolOf(resource string) string { return sharedWithMemory(resource) }
 func (none) Read(resource string) (Reading, error) {
 	return Reading{Resource: resource, At: time.Now()}, nil
+}
+
+// Memory is the machine's system memory as a resource name.
+const Memory = "memory"
+
+// CardPrefix begins every accelerator resource, card:0 first.
+const CardPrefix = "card:"
+
+// A Pooled instrument says which resource's bytes another resource is carved
+// from. A shared-memory adapter's card:<n> is carved from memory, so a lease
+// on one and a lease on the other spend the same bytes and are admitted
+// against one pool (CONTRACT.md RES-L2). PoolOf returns the resource whose
+// pool this resource spends, or "" when the resource is its own pool.
+type Pooled interface {
+	PoolOf(resource string) string
+}
+
+// PoolOf is the resource whose pool resource spends under in: the one its
+// Pooled declaration names, and resource itself otherwise.
+func PoolOf(in Instrument, resource string) string {
+	if pooled, ok := in.(Pooled); ok {
+		if pool := pooled.PoolOf(resource); pool != "" {
+			return pool
+		}
+	}
+	return resource
+}
+
+// sharedWithMemory is the declaration of an instrument that cannot tell a
+// discrete adapter from a shared-memory one: every card:<n> is read as carved
+// from memory. On a discrete card this admits against system memory, which is
+// the limit CONTRACT.md RES-L2 states until an instrument reads the adapter's
+// dedicated capacity.
+func sharedWithMemory(resource string) string {
+	if strings.HasPrefix(resource, CardPrefix) {
+		return Memory
+	}
+	return ""
+}
+
+// FixedResource is one resource a Fixed instrument reports.
+type FixedResource struct {
+	// Capacity is the pool's bytes; 0 says the instrument cannot tell.
+	Capacity int64
+	// Pool names the resource whose bytes this one is carved from, "" for
+	// its own pool.
+	Pool    string
+	Samples []Sample
+}
+
+// Fixed is an instrument whose readings its owner sets. The service's tests
+// and the conformance driver measure through it (dmap-1 I-10): a 24 GiB
+// discrete card or a 128 GiB shared-memory pool is a value here, never a GPU
+// run. Fixed is safe for concurrent use.
+type Fixed struct {
+	mu        sync.Mutex
+	resources map[string]FixedResource
+	order     []string
+}
+
+// NewFixed returns a Fixed instrument reporting nothing yet.
+func NewFixed() *Fixed { return &Fixed{resources: map[string]FixedResource{}} }
+
+// Set replaces what the instrument reports for resource.
+func (f *Fixed) Set(resource string, r FixedResource) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, seen := f.resources[resource]; !seen {
+		f.order = append(f.order, resource)
+	}
+	r.Samples = append([]Sample(nil), r.Samples...)
+	f.resources[resource] = r
+}
+
+// Name is NameFixed.
+func (f *Fixed) Name() string { return NameFixed }
+
+// Resources are the resources set so far, in the order they were first set.
+func (f *Fixed) Resources() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.order...)
+}
+
+// PoolOf is the Pool each resource was set with.
+func (f *Fixed) PoolOf(resource string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resources[resource].Pool
+}
+
+// VerifiedProcessSamples is false: a set sample pinned no process.
+func (f *Fixed) VerifiedProcessSamples() bool { return false }
+
+// Read returns what was set for resource, and an empty reading otherwise.
+func (f *Fixed) Read(resource string) (Reading, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r := f.resources[resource]
+	return Reading{Resource: resource, Capacity: r.Capacity,
+		Samples: append([]Sample(nil), r.Samples...), At: time.Now()}, nil
 }

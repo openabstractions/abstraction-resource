@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	identity "github.com/openabstractions/abstraction-identity"
 	wire "github.com/openabstractions/abstraction-resource/go/abstraction/resource"
@@ -20,6 +21,40 @@ type holdRules struct {
 	mu      sync.Mutex
 	refused map[[2]string]bool
 	outage  bool
+}
+
+func TestRecheckCheckedPreservesUnavailableAndReportsDeadline(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(fmt.Sprint(deadline), func(t *testing.T) {
+			who := Subject{Program: `C:\oa\modelhostd.exe`, Account: "S-1-5-21-7-1001"}
+			rules := &holdRules{refused: map[[2]string]bool{}}
+			book := ruledCardBook(t, rules, &who)
+			got := book.Acquire(t.Context(), who, &identity.Peer{}, instrument.Card0, gib, 0)
+			if got.Lease == nil {
+				t.Fatal(got)
+			}
+			book.standing = func(ctx context.Context, _ Subject, _, _ string) error {
+				if deadline {
+					<-ctx.Done()
+					return errors.New("denied after cancellation")
+				}
+				return ErrPolicyUnavailable
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+			defer cancel()
+			err := book.RecheckChecked(ctx)
+			if deadline && !errors.Is(err, context.DeadlineExceeded) || !deadline && !errors.Is(err, ErrPolicyUnavailable) {
+				t.Fatal(err)
+			}
+			if len(leasesOf(book, who, instrument.Card0)) != 1 {
+				t.Fatal("uncertain decision ended lease")
+			}
+			book.standing = func(context.Context, Subject, string, string) error { return errors.New("denied") }
+			if err := book.RecheckChecked(t.Context()); err != nil || len(leasesOf(book, who, instrument.Card0)) != 0 {
+				t.Fatalf("refusal not settled: %v", err)
+			}
+		})
+	}
 }
 
 func (h *holdRules) revoke(program, resource string) {

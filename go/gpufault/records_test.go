@@ -1,6 +1,7 @@
 package gpufault
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,6 +58,23 @@ func TestFromXMLReadsTheDaysRecords(t *testing.T) {
 		if ev, ok := FromXML([]byte(other)); ok {
 			t.Fatalf("%q read as %+v", other, ev)
 		}
+	}
+}
+
+// A Kernel-Power 507 says why standby ended and how long it slept.
+// Synthetic values in the 507 EventData shape.
+func TestStandbyExitKeepsItsReason(t *testing.T) {
+	rec := `<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Kernel-Power' Guid='{331c3b3a-2005-44c2-ac5e-77220c37d6b4}'/><EventID>507</EventID><TimeCreated SystemTime='2026-10-02T08:00:00.0000000Z'/><Execution ProcessID='4'/><Channel>System</Channel><Security UserID='S-1-5-18'/></System><EventData><Data Name='Reason'>52</Data><Data Name='SleepDurationInUs'>3600000000</Data></EventData></Event>`
+	ev, ok := FromXML([]byte(rec))
+	if !ok || ev.Kind != StandbyExit || ev.Reason != "52" || ev.SleepDuration != time.Hour {
+		t.Fatalf("read %+v %v", ev, ok)
+	}
+	awake := strings.Replace(rec, `<Data Name='Reason'>52</Data><Data Name='SleepDurationInUs'>3600000000</Data>`, `<Data Name='Reason'>52</Data><Data Name='SleepEntered'>false</Data><Data Name='DurationInUs'>2000000</Data><Data Name='SleepDurationInUs'>0</Data>`, 1)
+	if ev, ok := FromXML([]byte(awake)); !ok || ev.Reason != "52" || ev.SleepDuration != 0 {
+		t.Fatalf("a 507 that ended before sleep read %+v %v", ev, ok)
+	}
+	if ev, _ := FromXML([]byte(standbyOut)); ev.Reason != "" || ev.SleepDuration != 0 {
+		t.Fatalf("a 507 without EventData read %+v", ev)
 	}
 }
 

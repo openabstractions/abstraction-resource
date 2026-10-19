@@ -7,14 +7,8 @@ import (
 	"time"
 )
 
-// The wake hold is a lease of resource awake (CONTRACT.md RES-A1). What moved
-// under leases@1 is the record: who holds the machine awake, since when, and
-// under which rule, read from the same table that says who holds the card.
-// What stayed where it was is the lifetime. The platform request is released
-// when the holder closes, exits or is killed, and a request-response call
-// cannot carry that (abstraction-rights CONTRACT.md, go/awake_lease_test.go),
-// so the host that owns the holder's connection keeps the request and writes
-// the lease here.
+// The resource book owns the platform request. Compatibility hosts release
+// connection-owned leases when their authenticated connection ends.
 
 // An AwakeHold is one live wake hold as the book records it.
 type AwakeHold struct {
@@ -34,13 +28,31 @@ type AwakeHold struct {
 // The lease never expires on a clock. It ends when release is called, which
 // the caller does when the holder's connection goes.
 func (b *Book) HoldAwake(who Subject, why string) (string, func()) {
+	id, release, _ := b.holdAwake(who, why, true)
+	return id, release
+}
+
+// HoldAwakeChecked bridges a pre-authorized connection hold using its original
+// subject. The resource book owns its system request; release ends the lease.
+func (b *Book) HoldAwakeChecked(who Subject, why string) (string, func(), error) {
+	return b.holdAwake(who, why, false)
+}
+
+func (b *Book) holdAwake(who Subject, why string, recordOnly bool) (string, func(), error) {
 	b.mu.Lock()
 	b.seq++
 	now := b.now()
 	live := &record{ID: "awake-" + strconv.FormatUint(b.seq, 10), Resource: ResourceAwake,
 		Program: who.Program, Account: who.Account, Grant: AwakeRight, Detail: oneLine(why),
-		Since: now, RenewBy: now, held: true}
+		Since: now, RenewBy: now, held: true, recordOnly: recordOnly}
 	b.leases[live.ID] = live
+	b.syncAwake()
+	if !recordOnly && b.keepSystemAwake != nil && b.systemAwake == nil {
+		delete(b.leases, live.ID)
+		err := b.systemError
+		b.mu.Unlock()
+		return "", func() {}, err
+	}
 	b.mu.Unlock()
 	b.record(auditRecord{Event: "acquired", Asker: who.Program, Lease: live.ID,
 		Resource: ResourceAwake, Answer: "acquired"})
@@ -49,11 +61,12 @@ func (b *Book) HoldAwake(who Subject, why string) (string, func()) {
 		once.Do(func() {
 			b.mu.Lock()
 			delete(b.leases, live.ID)
+			b.syncAwake()
 			b.mu.Unlock()
 			b.record(auditRecord{Event: "released", Asker: who.Program, Lease: live.ID,
 				Resource: ResourceAwake, Answer: "released"})
 		})
-	}
+	}, nil
 }
 
 // AwakeHolds is who holds the machine awake now, oldest first. It is the one

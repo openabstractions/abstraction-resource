@@ -86,6 +86,10 @@ func (f *lifetimeLeases) Renew(id string) (res.LeaseChange, error) {
 	return res.LeaseChange{Applied: true}, nil
 }
 
+func (*lifetimeLeases) Label(string, string) (res.LeaseChange, error) {
+	return res.LeaseChange{Applied: true}, nil
+}
+
 func (f *lifetimeLeases) Release(id string) (res.LeaseChange, error) {
 	f.enter(id, "release")
 	defer f.leave(id)
