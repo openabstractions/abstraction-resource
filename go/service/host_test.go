@@ -83,8 +83,18 @@ func TestResourceHostServesSharedSessions(t *testing.T) {
 	if err := host.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := io.ReadFull(conn, header[:]); err != nil || binary.BigEndian.Uint32(header[:]) != 0xffffffff {
-		t.Fatalf("idle session after shutdown: marker %#x, error %v", binary.BigEndian.Uint32(header[:]), err)
+	// Reading the last response does not prove the handler has released its
+	// call yet. Shutdown retires an idle session with its marker; a still-owned
+	// completed exchange ends with EOF (FRAMING.md, responses and retirement).
+	n, err := io.ReadFull(conn, header[:])
+	if !(n == 0 && errors.Is(err, io.EOF)) && !(err == nil && binary.BigEndian.Uint32(header[:]) == 0xffffffff) {
+		t.Fatalf("session after shutdown: %d bytes, marker %#x, error %v", n, binary.BigEndian.Uint32(header[:]), err)
+	}
+	if err == nil {
+		var trailing [1]byte
+		if n, err := conn.Read(trailing[:]); n != 0 || !errors.Is(err, io.EOF) {
+			t.Fatalf("bytes after shutdown marker: %d bytes, error %v", n, err)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package instrument
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -40,4 +41,32 @@ func residentByPID(mem []counter) map[int]int64 {
 		}
 	}
 	return total
+}
+
+// adapterInstance is the token PDH's GPU instance names carry for one adapter
+// LUID: `luid_0x<high>_0x<low>`, eight hex digits each. A LUID is fixed for
+// one boot only.
+func adapterInstance(high int32, low uint32) string {
+	return fmt.Sprintf("luid_0x%08x_0x%08x", uint32(high), low)
+}
+
+// onAdapter keeps the counter rows of one adapter, named by its
+// adapterInstance token; PDH writes the hex digits in either case. An empty
+// adapter keeps every row.
+func onAdapter(mem []counter, adapter string) []counter {
+	if adapter == "" {
+		return mem
+	}
+	var out []counter
+	for _, c := range mem {
+		name := strings.ToLower(c.instance)
+		i := strings.Index(name, adapter)
+		if i < 0 {
+			continue
+		}
+		if end := i + len(adapter); end == len(name) || name[end] == '_' {
+			out = append(out, c)
+		}
+	}
+	return out
 }

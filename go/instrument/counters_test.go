@@ -73,3 +73,29 @@ func TestNoneMeasuresNothing(t *testing.T) {
 		t.Fatalf("none.Read(%q) = %+v, %v", Card0, r, err)
 	}
 }
+
+// PDH names an adapter `luid_0x<high>_0x<low>` in either hex case. The filter
+// keeps one adapter's rows and never a LUID that merely begins with it.
+func TestOnAdapterKeepsOneAdaptersRows(t *testing.T) {
+	adapter := adapterInstance(0, 0xCB0F)
+	if adapter != "luid_0x00000000_0x0000cb0f" {
+		t.Fatalf("adapter token %q", adapter)
+	}
+	mem := []counter{
+		{instance: "pid_1_luid_0x00000000_0x0000CB0F_phys_0", value: 1},
+		{instance: "pid_2_luid_0x00000000_0x00004321_phys_0", value: 2},
+		{instance: "pid_3_luid_0x00000000_0x0000cb0f_phys_0_eng_0_engtype_3D", value: 3},
+		{instance: "luid_0x00000000_0x0000CB0F", value: 4},
+		{instance: "pid_5_luid_0x00000000_0x0000CB0F0_phys_0", value: 5},
+	}
+	var kept []int64
+	for _, c := range onAdapter(mem, adapter) {
+		kept = append(kept, c.value)
+	}
+	if len(kept) != 3 || kept[0] != 1 || kept[1] != 3 || kept[2] != 4 {
+		t.Fatalf("kept %v, want rows 1, 3 and 4", kept)
+	}
+	if len(onAdapter(mem, "")) != len(mem) {
+		t.Fatal("an unread adapter dropped rows")
+	}
+}

@@ -78,11 +78,13 @@ service measures and never asks to yield (RES-L3).
 
 **[RES-T2] Instruments.** The instruments MUST be the service's own: the
 service alone measures. On Windows the instrument MUST read `\GPU Process
-Memory(*)\Total Committed` per process, summed over the adapter LUIDs it
-touches, and MUST read `card:0`'s capacity from DXGI's adapter description:
-the largest hardware adapter's `DedicatedVideoMemory`,
-`DedicatedSystemMemory` and `SharedSystemMemory` together, the memory the
-operating system lets that adapter map. On the owner's Radeon 8060S (128 GiB
+Memory(*)\Total Committed` per process, and MUST read `card:0`'s capacity
+from DXGI's adapter description: the largest hardware adapter's
+`DedicatedVideoMemory`, `DedicatedSystemMemory` and `SharedSystemMemory`
+together, the memory the operating system lets that adapter map. `card:0`'s
+usage MUST come from the counter rows of that adapter's LUID alone, summed
+per process, so usage and capacity describe one adapter. When DXGI names no
+adapter, the instrument reads every adapter's rows and no capacity. On the owner's Radeon 8060S (128 GiB
 installed, 123.6 GiB visible to Windows) that is 3.83 GiB dedicated plus
 98.92 GiB shared, 102.7 GiB; the table had read the card as unknown. On Linux the instrument MUST read `/proc/<pid>/fdinfo`: each
 process's `drm-resident-<region>` MUST be summed after its fds are

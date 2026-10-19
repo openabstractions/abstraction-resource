@@ -68,8 +68,8 @@ type gpuCounters struct{}
 func (gpuCounters) Name() string        { return NameWindowsGPUCounters }
 func (gpuCounters) Resources() []string { return []string{Card0} }
 
-// PoolOf reads card:0 as carved from memory: the counters sum every adapter,
-// and card and memory leases count against each other (CONTRACT.md RES-L2).
+// PoolOf reads card:0 as carved from memory: card and memory leases count
+// against each other (CONTRACT.md RES-L2).
 func (gpuCounters) PoolOf(resource string) string { return sharedWithMemory(resource) }
 
 // PDH's GPU rows name a PID without the creation identity of the process
@@ -82,43 +82,52 @@ func (gpuCounters) ChildUsage(pid int, startID string) (int64, error) {
 	return ChildUsage(pid, startID)
 }
 
-// adapterCapacity is card:0's capacity, the largest hardware adapter's
-// GPU-visible memory. The adapter figure does not move while the machine
-// runs, so a successful read is kept; a failed one is tried again next time.
-var adapterCapacity = func() func() int64 {
+// card0 is card:0's capacity, the largest hardware adapter's GPU-visible
+// memory, and the PDH instance token of that adapter's LUID. The adapter does
+// not change while the machine runs, so a successful read is kept; a failed
+// one answers zero and "" and is tried again next time.
+var card0 = func() func() (int64, string) {
 	var mu sync.Mutex
 	var known int64
-	return func() int64 {
+	var adapter string
+	return func() (int64, string) {
 		mu.Lock()
 		defer mu.Unlock()
 		if known <= 0 {
-			if bytes, err := AdapterCapacity(); err == nil {
-				known = bytes
+			if bytes, luid, err := card0Adapter(); err == nil {
+				known, adapter = bytes, adapterInstance(luid.HighPart, luid.LowPart)
 			}
 		}
-		return known
+		return known, adapter
 	}
 }()
+
+// readCounters reads PDH counter paths; tests replace it with fixed rows.
+var readCounters = counters
 
 func (g gpuCounters) Read(resource string) (Reading, error) {
 	at := time.Now()
 	if resource != Card0 {
 		return Reading{Resource: resource, At: at}, nil
 	}
-	mem, err := counters(`\GPU Process Memory(*)\Total Committed`)
+	mem, err := readCounters(`\GPU Process Memory(*)\Total Committed`)
 	if err != nil {
 		return Reading{}, err
 	}
+	// Usage is read on the adapter capacity describes (ruling 7, 0.8.1).
+	// An unread adapter keeps every row, the figure before the filter.
+	capacity, adapter := card0()
+	mem = onAdapter(mem, adapter)
 	// The process counter set is the fallback name of a process whose handle
 	// this account cannot open; an elevated process holding the card is still
 	// a holder, and a row under its image name is the truth available.
 	//unchecked: this fallback lookup is best-effort, per the comment above; an error here just leaves byPID empty below
-	named, _ := counters(`\Process(*)\ID Process`)
+	named, _ := readCounters(`\Process(*)\ID Process`)
 	byPID := map[int]string{}
 	for _, c := range named {
 		byPID[int(c.value)] = c.instance
 	}
-	out := Reading{Resource: resource, Capacity: adapterCapacity(), At: at}
+	out := Reading{Resource: resource, Capacity: capacity, At: at}
 	for pid, v := range residentByPID(mem) {
 		if v < Threshold {
 			continue

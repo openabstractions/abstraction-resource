@@ -3,6 +3,7 @@ package instrument
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -73,10 +74,20 @@ func adapterVisible(desc dxgiAdapterDesc1) int64 {
 type comObject struct{ vtbl *[16]uintptr }
 
 // call calls slot of the object's vtable with the object as the first
-// argument and returns the HRESULT.
+// argument and returns the HRESULT. An address in args must come from
+// outParam: call may grow the goroutine's stack after the address became a
+// uintptr, and a stack variable would move from under the COM method.
 func (o *comObject) call(slot int, args ...uintptr) uint32 {
 	r, _, _ := syscall.SyscallN(o.vtbl[slot], append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)...)
 	return uint32(r)
+}
+
+// outParam allocates a COM method's out parameter on the heap, which never
+// moves, and keeps it pinned until pin is unpinned.
+func outParam[T any](pin *runtime.Pinner) *T {
+	p := new(T)
+	pin.Pin(p)
+	return p
 }
 
 // AdapterCapacity is the GPU-visible bytes of the largest hardware graphics
@@ -84,36 +95,61 @@ func (o *comObject) call(slot int, args ...uintptr) uint32 {
 // figure for the adapter, never the per-process budget QueryVideoMemoryInfo
 // answers. Zero with an error when no hardware adapter answers.
 func AdapterCapacity() (int64, error) {
+	bytes, _, err := card0Adapter()
+	return bytes, err
+}
+
+// card0Adapter is card:0: the largest hardware graphics adapter, its
+// GPU-visible bytes and its LUID. The first adapter DXGI enumerates wins a
+// tie. The LUID names the adapter's PDH rows for this boot only.
+func card0Adapter() (int64, windows.LUID, error) {
 	if err := createDXGIFactory1.Find(); err != nil {
-		return 0, err
+		return 0, windows.LUID{}, err
 	}
-	var factory *comObject
-	if hr, _, _ := createDXGIFactory1.Call(uintptr(unsafe.Pointer(&iidIDXGIFactory1)), uintptr(unsafe.Pointer(&factory))); uint32(hr) != 0 || factory == nil {
-		return 0, fmt.Errorf("CreateDXGIFactory1: 0x%08x", uint32(hr))
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	out := outParam[*comObject](&pin)
+	hr, _, _ := createDXGIFactory1.Call(uintptr(unsafe.Pointer(&iidIDXGIFactory1)), uintptr(unsafe.Pointer(out))) //unchecked: COM returns the checked HRESULT in hr, not GetLastError
+	factory := *out
+	if uint32(hr) != 0 || factory == nil {
+		return 0, windows.LUID{}, fmt.Errorf("CreateDXGIFactory1: 0x%08x", uint32(hr))
 	}
 	defer factory.call(vtblRelease)
-	var best int64
+	var descs []dxgiAdapterDesc1
 	for index := uintptr(0); index < 64; index++ {
-		var adapter *comObject
-		hr := factory.call(vtblEnumAdapters1, index, uintptr(unsafe.Pointer(&adapter)))
+		slot := outParam[*comObject](&pin)
+		hr := factory.call(vtblEnumAdapters1, index, uintptr(unsafe.Pointer(slot)))
+		adapter := *slot
 		if hr == dxgiErrorNotFound {
 			break
 		}
 		if hr != 0 || adapter == nil {
-			return 0, fmt.Errorf("EnumAdapters1(%d): 0x%08x", index, hr)
+			return 0, windows.LUID{}, fmt.Errorf("EnumAdapters1(%d): 0x%08x", index, hr)
 		}
-		var desc dxgiAdapterDesc1
-		hr = adapter.call(vtblGetDesc1, uintptr(unsafe.Pointer(&desc)))
+		desc := outParam[dxgiAdapterDesc1](&pin)
+		hr = adapter.call(vtblGetDesc1, uintptr(unsafe.Pointer(desc)))
 		adapter.call(vtblRelease)
 		if hr != 0 {
-			return 0, fmt.Errorf("GetDesc1(%d): 0x%08x", index, hr)
+			return 0, windows.LUID{}, fmt.Errorf("GetDesc1(%d): 0x%08x", index, hr)
 		}
-		best = max(best, adapterVisible(desc))
+		descs = append(descs, *desc)
+	}
+	return largestAdapter(descs)
+}
+
+// largestAdapter picks card:0 from DXGI's adapter descriptions.
+func largestAdapter(descs []dxgiAdapterDesc1) (int64, windows.LUID, error) {
+	var best int64
+	var luid windows.LUID
+	for _, desc := range descs {
+		if visible := adapterVisible(desc); visible > best {
+			best, luid = visible, desc.AdapterLuid
+		}
 	}
 	if best <= 0 {
-		return 0, errAdapterUnavailable
+		return 0, windows.LUID{}, errAdapterUnavailable
 	}
-	return best, nil
+	return best, luid, nil
 }
 
 // kmtAdapterInfo is D3DKMT_ADAPTERINFO.

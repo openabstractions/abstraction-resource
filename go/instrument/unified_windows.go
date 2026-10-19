@@ -2,6 +2,7 @@ package instrument
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -53,28 +54,33 @@ func adapterUnified() (bool, error) {
 	if err := d3d12CreateDevice.Find(); err != nil {
 		return false, err
 	}
-	var factory *comObject
-	if hr, _, _ := createDXGIFactory1.Call(uintptr(unsafe.Pointer(&iidIDXGIFactory1)), uintptr(unsafe.Pointer(&factory))); uint32(hr) != 0 || factory == nil {
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	out := outParam[*comObject](&pin)
+	hr, _, _ := createDXGIFactory1.Call(uintptr(unsafe.Pointer(&iidIDXGIFactory1)), uintptr(unsafe.Pointer(out))) //unchecked: COM returns the checked HRESULT in hr, not GetLastError
+	factory := *out
+	if uint32(hr) != 0 || factory == nil {
 		return false, fmt.Errorf("CreateDXGIFactory1: 0x%08x", uint32(hr))
 	}
 	defer factory.call(vtblRelease)
 	var best *comObject
 	var bestSize int64
 	for index := uintptr(0); index < 64; index++ {
-		var adapter *comObject
-		hr := factory.call(vtblEnumAdapters1, index, uintptr(unsafe.Pointer(&adapter)))
+		slot := outParam[*comObject](&pin)
+		hr := factory.call(vtblEnumAdapters1, index, uintptr(unsafe.Pointer(slot)))
+		adapter := *slot
 		if hr == dxgiErrorNotFound {
 			break
 		}
 		if hr != 0 || adapter == nil {
 			return false, fmt.Errorf("EnumAdapters1(%d): 0x%08x", index, hr)
 		}
-		var desc dxgiAdapterDesc1
-		if hr := adapter.call(vtblGetDesc1, uintptr(unsafe.Pointer(&desc))); hr != 0 {
+		desc := outParam[dxgiAdapterDesc1](&pin)
+		if hr := adapter.call(vtblGetDesc1, uintptr(unsafe.Pointer(desc))); hr != 0 {
 			adapter.call(vtblRelease)
 			return false, fmt.Errorf("GetDesc1(%d): 0x%08x", index, hr)
 		}
-		if size := adapterVisible(desc); size > bestSize {
+		if size := adapterVisible(*desc); size > bestSize {
 			if best != nil {
 				best.call(vtblRelease)
 			}
@@ -87,15 +93,17 @@ func adapterUnified() (bool, error) {
 		return false, errAdapterUnavailable
 	}
 	defer best.call(vtblRelease)
-	var device *comObject
-	hr, _, _ := d3d12CreateDevice.Call(uintptr(unsafe.Pointer(best)), d3dFeatureLevel11,
-		uintptr(unsafe.Pointer(&iidID3D12Device)), uintptr(unsafe.Pointer(&device)))
+	out = outParam[*comObject](&pin)
+	//unchecked: COM returns the checked HRESULT in hr, not GetLastError
+	hr, _, _ = d3d12CreateDevice.Call(uintptr(unsafe.Pointer(best)), d3dFeatureLevel11,
+		uintptr(unsafe.Pointer(&iidID3D12Device)), uintptr(unsafe.Pointer(out)))
+	device := *out
 	if uint32(hr) != 0 || device == nil {
 		return false, fmt.Errorf("D3D12CreateDevice: 0x%08x", uint32(hr))
 	}
 	defer device.call(vtblRelease)
-	var arch d3d12Architecture
-	if hr := device.call(vtblCheckFeatureSupport, d3d12FeatureArchitecture, uintptr(unsafe.Pointer(&arch)), unsafe.Sizeof(arch)); hr != 0 {
+	arch := outParam[d3d12Architecture](&pin)
+	if hr := device.call(vtblCheckFeatureSupport, d3d12FeatureArchitecture, uintptr(unsafe.Pointer(arch)), unsafe.Sizeof(*arch)); hr != 0 {
 		return false, fmt.Errorf("CheckFeatureSupport(ARCHITECTURE): 0x%08x", hr)
 	}
 	return arch.UMA != 0, nil
